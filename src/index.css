@@ -1,0 +1,165 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.5;
+}
+
+h1, h2, h3, h4, h5 {
+  font-family: 'Playfair Display', serif;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+/* Scrollbar — boutique */
+html { scroll-behavior: smooth; }
+
+* { scrollbar-width: thin; scrollbar-color: rgba(120,120,120,0.35) transparent; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track {
+  background: transparent;
+  border-left: 1px solid #F1F1F1;
+}
+.dark ::-webkit-scrollbar-track { border-left-color: #1F1F1F; }
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(30,64,175,0.45), rgba(107,30,43,0.45));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(91,91,246,0.55), rgba(107,30,43,0.55));
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(30,64,175,0.75), rgba(107,30,43,0.75));
+  background-clip: padding-box;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(91,91,246,0.9), rgba(107,30,43,0.8));
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
+.custom-scroll { scroll-behavior: smooth; overscroll-behavior: contain; }
+
+@layer components {
+  .glass-card {
+    @apply rounded-2xl border backdrop-blur-xl transition-colors duration-300;
+    background: rgba(255,255,255,0.65);
+    border-color: #F1F1F1;
+  }
+  .dark .glass-card {
+    background: linear-gradient(180deg, rgba(20,20,22,0.7), rgba(12,12,14,0.7));
+    border-color: #1F1F1F;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+  }
+  .bento {
+    @apply glass-card p-5;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium tracking-wide uppercase;
+    background: rgba(0,0,0,0.04);
+    color: #333;
+  }
+  .dark .chip {
+    background: rgba(255,255,255,0.06);
+    color: #e8e8e8;
+  }
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200;
+    background: #1E40AF;
+    color: white;
+  }
+  .dark .btn-primary {
+    background: #5B5BF6;
+    box-shadow: 0 0 0 1px rgba(91,91,246,0.45), 0 10px 30px rgba(91,91,246,0.25);
+  }
+  .btn-primary:hover { transform: translateY(-1px); }
+
+  .divider {
+    height: 1px;
+    background: #F1F1F1;
+  }
+  .dark .divider {
+    background: #1F1F1F;
+  }
+
+  .section-title {
+    @apply font-display text-3xl md:text-4xl tracking-tight;
+  }
+  .eyebrow {
+    @apply text-[11px] uppercase tracking-[0.22em] font-medium;
+    color: #8a8a8a;
+  }
+  .lab-input {
+    @apply w-full bg-transparent outline-none text-sm p-2.5 rounded-lg border transition;
+    border-color: #E5E5E5;
+  }
+  .lab-input:focus {
+    border-color: #1E40AF;
+    box-shadow: 0 0 0 3px rgba(30,64,175,0.12);
+  }
+  .dark .lab-input {
+    border-color: #262626;
+  }
+  .dark .lab-input:focus {
+    border-color: #5B5BF6;
+    box-shadow: 0 0 0 3px rgba(91,91,246,0.2);
+  }
+}
+
+/* Smooth theme transition */
+* {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-duration: 280ms;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Shimmer */
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  animation: shimmer 2.4s infinite;
+}
+
+/* Scanner */
+@keyframes scan {
+  0% { top: 0%; }
+  100% { top: 100%; }
+}
+@keyframes labScan {
+  0% { top: 4%; }
+  100% { top: 96%; }
+}
+.scanner-line {
+  position: absolute;
+  left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #5B5BF6, transparent);
+  box-shadow: 0 0 24px 2px rgba(91,91,246,0.55);
+  animation: scan 2.2s ease-in-out infinite alternate;
+}
