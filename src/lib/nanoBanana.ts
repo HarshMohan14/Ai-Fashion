@@ -186,10 +186,10 @@ export async function renderLook(input: LookRenderInput): Promise<LookRenderResu
   );
 
   const parts: Array<{ text: string } | GeminiImagePart> = [];
-  for (const { index, part } of referenceParts) {
+  for (const { index, sourceUrl, part } of referenceParts) {
     const label = index === 0
-      ? 'reference_image_1: uploaded 5-angle model photosheet. Use only this person as the identity source.'
-      : `reference_image_${index + 1}: wardrobe item to be worn by the model, not displayed separately.`;
+      ? `reference_image_1 (model photosheet, sourced from Supabase at ${sourceUrl}): this is the ONLY identity source — keep the exact face, skin tone, hair, height, and body proportions.`
+      : `reference_image_${index + 1} (wardrobe garment): dress the same subject in this garment exactly as shown. Do not describe it in the output, just render it worn.`;
     parts.push({ text: label }, part);
   }
   parts.push({ text: input.prompt });
