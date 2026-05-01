@@ -1,9 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const IMAGE_MODEL_FALLBACKS = [
-  'gemini-2.5-flash-image',
-  'gemini-2.5-flash-image-preview',
-  'gemini-2.0-flash-exp-image-generation',
+  'gemini-2.5-flash-image'
 ];
 
 export type ReRenderInput = {
@@ -44,47 +42,25 @@ export async function reRenderItem(input: ReRenderInput): Promise<ReRenderResult
   const inline = dataUrlToInline(input.cropDataUrl);
   const prompt = buildPrompt(input);
 
-  let lastErr: unknown = null;
-  for (const modelName of IMAGE_MODEL_FALLBACKS) {
-    try {
-      const model = genAI.getGenerativeModel({
-        model: modelName,
-        generationConfig: {
-          // @ts-expect-error — responseModalities is supported by image-generation models
-          responseModalities: ['Image'],
-          temperature: 0.4,
-        },
-      });
-      const result = await model.generateContent([
-        { inlineData: inline },
-        { text: prompt },
-      ]);
-      const parts = result.response.candidates?.[0]?.content?.parts ?? [];
-      for (const part of parts) {
-        const img = (part as { inlineData?: { data?: string; mimeType?: string } }).inlineData;
-        if (img?.data) {
-          const mime = img.mimeType || 'image/png';
-          return { dataUrl: `data:${mime};base64,${img.data}`, model: modelName };
-        }
-      }
-    } catch (e) {
-      lastErr = e;
-      const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
-      if (
-        !msg.includes('not found') &&
-        !msg.includes('404') &&
-        !msg.includes('not supported') &&
-        !msg.includes('unsupported')
-      ) {
-        break;
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-image' });
+    const result = await model.generateContent([
+      { inlineData: inline },
+      { text: prompt },
+    ]);
+    const responseParts = result.response.candidates?.[0]?.content?.parts ?? [];
+    for (const part of responseParts) {
+      const img = (part as { inlineData?: { data?: string; mimeType?: string } }).inlineData;
+      if (img?.data) {
+        const mime = img.mimeType || 'image/png';
+        return { dataUrl: `data:${mime};base64,${img.data}`, model: 'gemini-2.5-flash-image' };
       }
     }
+  } catch (e) {
+    console.error('[Nano Banana] Extraction Lab Re-render error:', e);
   }
 
-  if (lastErr) {
-    // Fall back to a deterministic "studio" recomposition so the UX never dead-ends.
-    return simulateReRender(input);
-  }
+  // Fall back to a deterministic "studio" recomposition so the UX never dead-ends.
   return simulateReRender(input);
 }
 
@@ -118,6 +94,7 @@ async function simulateReRender(input: ReRenderInput): Promise<ReRenderResult> {
 export type LookRenderInput = {
   prompt: string;
   referenceUrls: string[];
+  referenceParts?: any[];
 };
 
 export type LookRenderResult = {
@@ -128,11 +105,11 @@ export type LookRenderResult = {
 
 type GeminiImagePart = { inlineData: { data: string; mimeType: string } };
 
-function isHostedUrl(url: string) {
+export function isHostedUrl(url: string) {
   return /^https?:\/\//i.test(url.trim());
 }
 
-function mimeTypeFromUrl(url: string) {
+export function mimeTypeFromUrl(url: string) {
   try {
     const pathname = new URL(url).pathname.toLowerCase();
     if (pathname.endsWith('.png')) return 'image/png';
@@ -144,7 +121,7 @@ function mimeTypeFromUrl(url: string) {
   return 'image/jpeg';
 }
 
-async function referenceToPart(url: string): Promise<GeminiImagePart> {
+export async function referenceToPart(url: string): Promise<GeminiImagePart> {
   const sourceUrl = url.trim();
   if (sourceUrl.startsWith('data:')) return { inlineData: dataUrlToInline(sourceUrl) };
   if (!isHostedUrl(sourceUrl)) throw new Error('Image reference is not a hosted URL or data URL.');
@@ -171,71 +148,94 @@ async function referenceToPart(url: string): Promise<GeminiImagePart> {
 }
 
 export async function renderLook(input: LookRenderInput): Promise<LookRenderResult> {
+  if (!input.prompt) {
+    throw new Error('No prompt provided for image generation.');
+  }
+
   const key = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
   if (!key) {
     throw new Error('Missing VITE_GEMINI_API_KEY. Runway needs Gemini to compose the model wearing wardrobe items.');
   }
 
   const genAI = new GoogleGenerativeAI(key);
-  const referenceParts = await Promise.all(
-    input.referenceUrls.map(async (url, index) => ({
-      index,
-      sourceUrl: url,
-      part: await referenceToPart(url),
-    })),
-  );
 
-  const parts: Array<{ text: string } | GeminiImagePart> = [];
-  for (const { index, sourceUrl, part } of referenceParts) {
-    const label = index === 0
-      ? `reference_image_1 (model photosheet, sourced from Supabase at ${sourceUrl}): this is the ONLY identity source — keep the exact face, skin tone, hair, height, and body proportions.`
-      : `reference_image_${index + 1} (wardrobe garment): dress the same subject in this garment exactly as shown. Do not describe it in the output, just render it worn.`;
-    parts.push({ text: label }, part);
-  }
-  parts.push({ text: input.prompt });
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-image' });
+    
+    const generatePayload = [
+      ...(input.referenceParts || []),
+      { text: input.prompt }
+    ];
 
-  if (import.meta.env.DEV) {
-    console.debug(
-      '[Dr. Stylist] Gemini reference payload',
-      referenceParts.map(({ index, sourceUrl, part }) => ({
-        reference: `reference_image_${index + 1}`,
-        transport: 'inlineData.base64',
-        sourceUrl,
-        mimeType: part.inlineData.mimeType,
-      })),
-    );
-  }
-
-  let lastErr: unknown = null;
-  for (const modelName of IMAGE_MODEL_FALLBACKS) {
-    try {
-      const model = genAI.getGenerativeModel({
-        model: modelName,
-        generationConfig: {
-          // @ts-expect-error — responseModalities is supported by image-generation models
-          responseModalities: ['Image'],
-          temperature: 0.55,
-        },
-      });
-      const result = await model.generateContent(parts);
-      const parts = result.response.candidates?.[0]?.content?.parts ?? [];
-      for (const part of parts) {
-        const img = (part as { inlineData?: { data?: string; mimeType?: string } }).inlineData;
-        if (img?.data) {
-          const mime = img.mimeType || 'image/png';
-          return { dataUrl: `data:${mime};base64,${img.data}`, model: modelName, mocked: false };
-        }
-      }
-      lastErr = new Error(`${modelName} returned no composed image.`);
-    } catch (e) {
-      lastErr = e;
-      const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
-      if (!msg.includes('not found') && !msg.includes('404') && !msg.includes('not supported') && !msg.includes('unsupported')) {
+    const result = await model.generateContent(generatePayload);
+    
+    const parts = result.response.candidates?.[0]?.content?.parts ?? [];
+    let baseGeneratedImage = '';
+    for (const part of parts) {
+      const img = (part as { inlineData?: { data?: string; mimeType?: string } }).inlineData;
+      if (img?.data) {
+        const mime = img.mimeType || 'image/jpeg';
+        baseGeneratedImage = `data:${mime};base64,${img.data}`;
         break;
       }
     }
+    
+    if (!baseGeneratedImage) {
+      throw new Error('Gemini model did not return inlineData.');
+    }
+
+    // --- STEP 3: Automated Face-Swap (If Token Exists) ---
+    const replicateToken = import.meta.env.VITE_REPLICATE_API_TOKEN as string | undefined;
+    if (replicateToken && input.faceSwapTargetUrl) {
+      console.log('[Dr. Stylist] Running Step 3 Face Swap with Replicate...');
+      try {
+        const repRes = await fetch('/replicate-api/v1/predictions', {
+          method: 'POST',
+          headers: {
+            Authorization: `Token ${replicateToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            version: '278a81e7ebb22db98bcba54de985d22cc1abeead2754eb1f2af717247be69b34', // codeplugtech/face-swap
+            input: {
+              input_image: baseGeneratedImage,
+              swap_image: input.faceSwapTargetUrl, 
+            }
+          })
+        });
+
+        if (!repRes.ok) {
+          const errorData = await repRes.json().catch(() => ({}));
+          throw new Error(`Replicate API failed (${repRes.status}): ${errorData.title || errorData.detail || 'Unknown Error'}`);
+        }
+
+        let prediction = await repRes.json();
+        
+        while (prediction.status !== 'succeeded' && prediction.status !== 'failed') {
+          await new Promise(r => setTimeout(r, 2000));
+          const pollRes = await fetch(`/replicate-api/v1/predictions/${prediction.id}`, {
+            headers: { Authorization: `Token ${replicateToken}` }
+          });
+          prediction = await pollRes.json();
+        }
+
+        if (prediction.status === 'succeeded' && prediction.output) {
+           console.log('[Dr. Stylist] Face Swap successful!');
+           return { dataUrl: prediction.output, model: 'gemini-2.5-flash-image + replicate-faceswap', mocked: false };
+        } else {
+           throw new Error(`Face Swap failed: ${prediction.error || 'Unknown Replicate Error'}`);
+        }
+      } catch (swapErr) {
+        console.error('[Dr. Stylist] Face Swap API Error:', swapErr);
+        throw swapErr; // Explicitly throw so the UI shows the billing error instead of silently returning a bad face
+      }
+    }
+
+    return { dataUrl: baseGeneratedImage, model: 'gemini-2.5-flash-image', mocked: false };
+  } catch (e) {
+    console.error('[Nano Banana] Gemini Image Error:', e);
+    throw e instanceof Error ? e : new Error('Failed to generate runway image with Gemini.');
   }
-  throw (lastErr instanceof Error ? lastErr : new Error('Gemini did not return a composed runway image.'));
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {

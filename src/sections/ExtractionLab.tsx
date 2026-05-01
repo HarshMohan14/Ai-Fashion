@@ -209,17 +209,45 @@ export function ExtractionLab() {
     }
   };
 
+  // Convert base64 data url to Blob
+  const dataUrlToBlob = (dataUrl: string) => {
+    const parts = dataUrl.split(',');
+    const match = parts[0].match(/:(.*?);/);
+    const mime = match ? match[1] : 'image/png';
+    const bstr = atob(parts[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while(n--){
+        u8arr[n] = bstr.charCodeAt(n);
+    }
+    return new Blob([u8arr], {type:mime});
+  };
+
   const approveAndSend = async (id: string) => {
     const it = items.find((i) => i.id === id);
     if (!it || !it.renderedDataUrl || it.dispatched) return;
     updateItem(id, { approved: true });
 
     try {
+      const blob = dataUrlToBlob(it.renderedDataUrl);
+      const ext = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png';
+      const filePath = `wardrobe-items/${it.id}.${ext}`;
+      
+      const { error: uploadErr } = await supabase.storage
+        .from('model-photosheets')
+        .upload(filePath, blob, { contentType: blob.type, upsert: true });
+
+      let finalImageUrl = it.renderedDataUrl;
+      if (!uploadErr) {
+        const { data } = supabase.storage.from('model-photosheets').getPublicUrl(filePath);
+        finalImageUrl = data.publicUrl;
+      }
+
       await supabase.from('wardrobe_items').insert({
         name: it.name,
         category: it.targetCategory || 'Topwear',
         subcategory: it.targetSubcategory || 'T-Shirts',
-        image_url: it.renderedDataUrl,
+        image_url: finalImageUrl,
         fabric: it.fabric,
         fit: it.fit,
         color_hex: it.color,

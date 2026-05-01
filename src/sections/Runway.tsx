@@ -77,15 +77,11 @@ export function Runway() {
     }
     setLoading(false);
 
-    const topwear = inputs.items.filter((i) => i.category === 'Topwear');
-    const bottomwear = inputs.items.filter((i) => i.category === 'Bottomwear');
-    const footwear = inputs.items.filter((i) => i.category === 'Footwear');
+    const topwear = inputs.items.filter((i) => i.category?.toLowerCase() === 'topwear' || i.category?.toLowerCase() === 'indian wear');
     const missing: string[] = [];
     if (!inputs.models.length) missing.push('models');
     else if (!inputs.models.some((m) => isHostedPhotosheetUrl(m.composite_url))) missing.push('hosted model photosheets');
-    if (!topwear.length) missing.push('topwear');
-    if (!bottomwear.length) missing.push('bottomwear');
-    if (!footwear.length) missing.push('footwear');
+    if (!topwear.length) missing.push('topwear or indian wear');
     setMissingInputs(missing.length ? missing.join(', ') : null);
   }, [push]);
 
@@ -453,7 +449,7 @@ function LookCard({
       className="break-inside-avoid bento p-0 overflow-hidden group"
     >
       <div className={`relative ${aspect} overflow-hidden bg-white`}>
-        <img src={look.image_url} alt={modelName || 'look'} className="w-full h-full object-cover transition duration-700 group-hover:scale-[1.03]" loading="lazy" />
+        <img src={look.image_url} alt={modelName || 'look'} referrerPolicy="no-referrer" className="w-full h-full object-cover transition duration-700 group-hover:scale-[1.03]" loading="lazy" />
 
         {modelThumb && (
           <div className="absolute bottom-3 right-3 w-16 h-20 rounded-lg overflow-hidden border-2 border-white shadow-boutique bg-white">
@@ -644,7 +640,7 @@ function Lightbox({ look, onClose }: { look: GeneratedLook; onClose: () => void 
         className="max-w-5xl w-full grid grid-cols-1 md:grid-cols-3 gap-5"
       >
         <div className="md:col-span-2 rounded-2xl overflow-hidden bg-white">
-          <img src={look.image_url} alt="look" className="w-full h-full object-contain" />
+          <img src={look.image_url} alt="look" referrerPolicy="no-referrer" className="w-full h-full object-contain" />
         </div>
         <div className="bento space-y-3 max-h-[80vh] overflow-y-auto">
           <div>

@@ -11,6 +11,13 @@ type ModelPublic = {
   nickname: string;
   primary_photo_url: string;
   composite_url: string;
+  photos: {
+    front?: string;
+    side?: string;
+    back?: string;
+    closeup?: string;
+    composite?: string;
+  };
   created_at: string;
 };
 
@@ -23,7 +30,7 @@ export function ModelHub() {
     setLoading(true);
     const { data } = await supabase
       .from('models_public')
-      .select('id, nickname, primary_photo_url, composite_url, created_at')
+      .select('id, nickname, primary_photo_url, composite_url, photos, created_at')
       .order('created_at', { ascending: false });
     setModels((data ?? []) as ModelPublic[]);
     setLoading(false);
@@ -138,82 +145,79 @@ function AddModelDrawer({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [sheetFile, setSheetFile] = useState<File | null>(null);
-  const [sheetPreviewUrl, setSheetPreviewUrl] = useState<string | null>(null);
+  const [files, setFiles] = useState<{ front: File | null; side: File | null; back: File | null; closeup: File | null }>({ front: null, side: null, back: null, closeup: null });
+  const [previews, setPreviews] = useState<{ front: string | null; side: string | null; back: string | null; closeup: string | null }>({ front: null, side: null, back: null, closeup: null });
   const [nickname, setNickname] = useState('');
   const [step, setStep] = useState<'form' | 'saving' | 'done'>('form');
   const [error, setError] = useState<string | null>(null);
   const director = useDirector();
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     return () => {
-      if (sheetPreviewUrl) URL.revokeObjectURL(sheetPreviewUrl);
+      Object.values(previews).forEach((url) => { if (url) URL.revokeObjectURL(url); });
     };
-  }, [sheetPreviewUrl]);
+  }, [previews]);
 
-  const onPick = (file: File) => {
+  const onPick = (key: keyof typeof files, file: File) => {
     if (!file.type.startsWith('image/')) {
-      setError('Please upload an image file for the model photosheet.');
+      setError(`Please upload an image file for the ${key} angle.`);
       return;
     }
     const previewUrl = URL.createObjectURL(file);
-    setSheetPreviewUrl(previewUrl);
-    setSheetFile(file);
+    setPreviews(p => ({ ...p, [key]: previewUrl }));
+    setFiles(f => ({ ...f, [key]: file }));
     setError(null);
   };
 
-  const clearSheet = () => {
-    setSheetFile(null);
-    setSheetPreviewUrl(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const f = e.dataTransfer.files?.[0];
-    if (f) onPick(f);
+  const clearSheet = (key: keyof typeof files) => {
+    setFiles(f => ({ ...f, [key]: null }));
+    setPreviews(p => ({ ...p, [key]: null }));
   };
 
   const save = async () => {
-    if (!sheetFile || !nickname.trim()) return;
+    if (!nickname.trim() || (!files.front && !files.closeup && !files.side && !files.back)) {
+      setError('Please provide a nickname and at least one model photo (front or closeup recommended).');
+      return;
+    }
     setStep('saving');
     const modelId = crypto.randomUUID();
-    const ext = fileExtensionFor(sheetFile);
-    const objectPath = `models/${modelId}/photosheet.${ext}`;
+    
     try {
-      const { error: uploadErr } = await supabase.storage
-        .from(MODEL_PHOTOSHEET_BUCKET)
-        .upload(objectPath, sheetFile, {
-          contentType: sheetFile.type || 'application/octet-stream',
-          upsert: true,
-        });
-      if (uploadErr) throw uploadErr;
+      const uploadedUrls: Record<string, string> = {};
+      
+      for (const [key, file] of Object.entries(files)) {
+        if (!file) continue;
+        const ext = fileExtensionFor(file);
+        const objectPath = `models/${modelId}/${key}.${ext}`;
+        const { error: uploadErr } = await supabase.storage
+          .from(MODEL_PHOTOSHEET_BUCKET)
+          .upload(objectPath, file, { contentType: file.type || 'application/octet-stream', upsert: true });
+        
+        if (uploadErr) throw uploadErr;
+        const { data: publicData } = supabase.storage.from(MODEL_PHOTOSHEET_BUCKET).getPublicUrl(objectPath);
+        uploadedUrls[key] = publicData.publicUrl;
+      }
 
-      const { data: publicData } = supabase.storage
-        .from(MODEL_PHOTOSHEET_BUCKET)
-        .getPublicUrl(objectPath);
-      const photosheetUrl = publicData.publicUrl;
+      // Determine the primary fallback URL
+      const primaryUrl = uploadedUrls.front || uploadedUrls.closeup || uploadedUrls.composite || Object.values(uploadedUrls)[0] || '';
 
       const { data: pub, error: pubErr } = await supabase
         .from('models_public')
         .insert({
           id: modelId,
           nickname: nickname.trim(),
-          primary_photo_url: photosheetUrl,
-          composite_url: photosheetUrl,
-          photos: { composite: photosheetUrl },
+          primary_photo_url: primaryUrl,
+          composite_url: primaryUrl, // Fallback for backward compatibility
+          photos: uploadedUrls,
         })
         .select('id, nickname')
         .maybeSingle();
-      if (pubErr || !pub) {
-        await supabase.storage.from(MODEL_PHOTOSHEET_BUCKET).remove([objectPath]);
-        throw pubErr ?? new Error('Insert failed');
-      }
+      
+      if (pubErr || !pub) throw pubErr ?? new Error('Insert failed');
 
       director.push(
         'Dr. Director',
-        `New model added — ${pub.nickname}. Ready for Dr. Stylist to compose looks.`,
+        `New 4-angle model added — ${pub.nickname}. Ready for Dr. Stylist to compose looks with maximum consistency.`,
       );
 
       setStep('done');
@@ -224,7 +228,48 @@ function AddModelDrawer({
     }
   };
 
-  const canSave = Boolean(sheetFile && nickname.trim());
+  const canSave = Boolean(nickname.trim() && (files.front || files.closeup || files.side || files.back));
+
+  const AngleUploader = ({ angleKey, label }: { angleKey: keyof typeof files, label: string }) => {
+    const previewUrl = previews[angleKey];
+    return (
+      <div className="flex flex-col gap-1">
+        <div className="text-[11px] uppercase tracking-[0.1em] text-neutral-500 font-medium">{label}</div>
+        <label
+          className={`relative rounded-lg border-2 h-[180px] overflow-hidden ${
+            previewUrl ? 'border-solid border-transparent' : 'border-dashed border-lab-border-light dark:border-lab-border cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 transition'
+          } grid place-items-center bg-black/[0.02] dark:bg-white/[0.02]`}
+        >
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) onPick(angleKey, f);
+              e.target.value = '';
+            }}
+          />
+          {previewUrl ? (
+            <>
+              <img src={previewUrl} alt={label} className="absolute inset-0 w-full h-full object-cover" />
+              <button
+                onClick={(e) => { e.preventDefault(); clearSheet(angleKey); }}
+                className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full grid place-items-center bg-black/60 text-white hover:bg-rose-500"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </>
+          ) : (
+            <div className="text-center p-2">
+              <Upload className="w-4 h-4 text-cobalt dark:text-indigo_electric mx-auto mb-1.5" />
+              <div className="text-[10px] text-neutral-500">Upload</div>
+            </div>
+          )}
+        </label>
+      </div>
+    );
+  };
 
   return (
     <motion.div
@@ -240,7 +285,7 @@ function AddModelDrawer({
         exit={{ x: 60, opacity: 0 }}
         transition={{ type: 'spring', stiffness: 180, damping: 26 }}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-xl h-full bg-alabaster dark:bg-obsidian border-l border-lab-border-light dark:border-lab-border overflow-y-auto"
+        className="w-full max-w-2xl h-full bg-alabaster dark:bg-obsidian border-l border-lab-border-light dark:border-lab-border overflow-y-auto"
       >
         <div className="sticky top-0 z-10 bg-alabaster/90 dark:bg-obsidian/90 backdrop-blur-xl border-b border-lab-border-light dark:border-lab-border px-6 py-4 flex items-center justify-between">
           <div>
@@ -252,51 +297,21 @@ function AddModelDrawer({
           </button>
         </div>
 
-        <div className="p-6 space-y-6">
+        <div className="p-6 space-y-8">
           <section>
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex items-center gap-2 mb-4">
               <FileImage className="w-4 h-4 text-cobalt dark:text-indigo_electric" />
-              <h3 className="font-medium">Composite stylesheet</h3>
+              <div>
+                <h3 className="font-medium">Model Perspectives</h3>
+                <p className="text-xs text-neutral-500 mt-0.5">Upload 4 distinct angles for the highest AI face & body consistency.</p>
+              </div>
             </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                const f = e.target.files?.[0];
-                if (f) onPick(f);
-              }}
-            />
-            <div
-              onClick={() => !sheetPreviewUrl && fileInputRef.current?.click()}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={onDrop}
-              className={`relative rounded-xl border-2 h-[340px] overflow-hidden ${
-                sheetPreviewUrl ? 'border-solid border-transparent' : 'border-dashed border-lab-border-light dark:border-lab-border cursor-pointer'
-              } grid place-items-center bg-black/[0.02] dark:bg-white/[0.02]`}
-            >
-              {sheetPreviewUrl ? (
-                <>
-                  <img src={sheetPreviewUrl} alt="sheet" className="absolute inset-0 w-full h-full object-contain" />
-                  <button
-                    onClick={clearSheet}
-                    className="absolute top-2 right-2 w-8 h-8 rounded-full grid place-items-center bg-black/60 text-white hover:bg-rose-500"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </>
-              ) : (
-                <div className="text-center">
-                  <div className="w-14 h-14 rounded-2xl bg-white dark:bg-white/10 grid place-items-center mx-auto mb-3 shadow-boutique">
-                    <Upload className="w-5 h-5 text-cobalt dark:text-indigo_electric" />
-                  </div>
-                  <div className="font-display text-xl">Drop stylesheet</div>
-                  <div className="text-xs text-neutral-500 mt-1.5 max-w-sm mx-auto">
-                    A single JPG / PNG containing the model's angles and face closeup.
-                  </div>
-                </div>
-              )}
+            
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <AngleUploader angleKey="front" label="Front View" />
+              <AngleUploader angleKey="side" label="Side View" />
+              <AngleUploader angleKey="back" label="Back View" />
+              <AngleUploader angleKey="closeup" label="Face Closeup" />
             </div>
           </section>
 
@@ -312,7 +327,7 @@ function AddModelDrawer({
             </label>
           </section>
 
-          {error && <div className="text-xs text-rose-500">{error}</div>}
+          {error && <div className="text-xs text-rose-500 bg-rose-500/10 p-3 rounded-lg border border-rose-500/20">{error}</div>}
 
           <div className="flex items-center gap-3 pt-2">
             <button disabled={!canSave || step === 'saving'} onClick={save} className="btn-primary disabled:opacity-40">
