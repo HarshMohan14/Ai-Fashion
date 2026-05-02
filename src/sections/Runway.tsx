@@ -14,6 +14,7 @@ import {
   CircleDot,
   Trash2,
   Eye,
+  Download,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import {
@@ -469,6 +470,9 @@ function LookCard({
           <button onClick={onZoom} className="w-8 h-8 rounded-full grid place-items-center bg-black/40 backdrop-blur text-white opacity-0 group-hover:opacity-100 transition">
             <Eye className="w-3.5 h-3.5" />
           </button>
+          <button onClick={(e) => { e.stopPropagation(); downloadImage(look.image_url, `runway-${modelName?.replace(/\s+/g, '-') || 'model'}-${Date.now()}.jpg`); }} className="w-8 h-8 rounded-full grid place-items-center bg-black/40 backdrop-blur text-white opacity-0 group-hover:opacity-100 transition hover:bg-cobalt">
+            <Download className="w-3.5 h-3.5" />
+          </button>
           <button onClick={onDelete} className="w-8 h-8 rounded-full grid place-items-center bg-black/40 backdrop-blur text-white opacity-0 group-hover:opacity-100 transition hover:bg-rose-500/80">
             <Trash2 className="w-3.5 h-3.5" />
           </button>
@@ -669,9 +673,34 @@ function Lightbox({ look, onClose }: { look: GeneratedLook; onClose: () => void 
               ))}
             </div>
           </div>
-          <button onClick={onClose} className="btn-primary w-full justify-center">Close</button>
+          <div className="flex gap-2">
+            <button onClick={() => downloadImage(look.image_url, `runway-${Date.now()}.jpg`)} className="btn-primary flex-1 justify-center">
+              <Download className="w-3.5 h-3.5" /> Download High-Res
+            </button>
+            <button onClick={onClose} className="px-4 py-2 rounded-lg border border-lab-border-light dark:border-lab-border text-sm font-medium hover:bg-black/5 dark:hover:bg-white/5">
+              Close
+            </button>
+          </div>
         </div>
       </motion.div>
     </motion.div>
   );
 }
+
+async function downloadImage(url: string, filename: string) {
+  try {
+    const response = await fetch(url);
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+  } catch (error) {
+    console.error('Failed to download image', error);
+  }
+}
+

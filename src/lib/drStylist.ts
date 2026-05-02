@@ -13,7 +13,11 @@ export type StylistModel = {
     back?: string;
     closeup?: string;
     composite?: string;
+    left?: string;
+    right?: string;
   };
+  physical_description?: string;
+  rag_memory?: string;
 };
 
 export type Permutation = {
@@ -46,7 +50,7 @@ function pick<T>(arr: T[], rng: () => number): T {
 
 export async function fetchStylistInputs() {
   const [{ data: modelsData }, { data: itemsData }] = await Promise.all([
-    supabase.from('models_public').select('id, nickname, primary_photo_url, composite_url, photos'),
+    supabase.from('models_public').select('id, nickname, primary_photo_url, composite_url, photos, physical_description, rag_memory'),
     supabase.from('wardrobe_items').select('*'),
   ]);
   return {
@@ -216,10 +220,15 @@ export async function generateLook(
     text: `Write a continuous, photorealistic image generation prompt describing this exact person wearing these exact clothes. 
     Crucial Directives:
     1. Setting: The final output must be set on a clean, white studio background.
-    2. Styling: The styling should reflect a modern Indian fashion sense. Keep it accessible and culturally resonant; do NOT make it look like overly abstract or bizarre high-fashion avant-garde.
-    3. Pose direction: ${pose}.
-    4. Incorporate this specific user style context: ${styleContext}.
-    ${feedback ? `5. Revision feedback: ${feedback}` : ''}
+    2. Garment Details (CRITICAL): The final image generation model will NOT see the reference images. You MUST describe the clothing references in excruciating visual detail. Describe the exact colors, patterns, fabric textures, cuts, lengths, and how they drape on the model.
+    3. Photography Style: Must look like an unretouched, raw, high-end editorial photograph. Specify "Shot on DSLR, 85mm lens, natural skin texture, visible pores, subtle skin imperfections, raw photography, highly detailed."
+    4. Negative constraints: Strictly avoid any 3D render, CGI, airbrushed, plastic, or "AI-generated" aesthetic. Skin should not look perfectly smooth.
+    5. Styling: The styling should reflect a modern Indian fashion sense. Keep it accessible and culturally resonant; do NOT make it look like overly abstract or bizarre high-fashion avant-garde.
+    6. Pose direction: ${pose}.
+    7. Incorporate this specific user style context: ${styleContext}.
+    ${p.model.physical_description ? `8. PHYSICAL AUTHENTICITY (CRITICAL): The subject's authentic physical description is: "${p.model.physical_description}". You MUST strictly adhere to this body type. Do NOT default to a slim or idealized fashion mannequin body. Preserve the authentic physical mass and structure.` : ''}
+    ${p.model.rag_memory ? `9. IDENTITY RAG MEMORY (CRITICAL): Past generations of this specific model failed due to these flaws. You MUST enforce these rules to avoid repeating past mistakes: \n${p.model.rag_memory}` : ''}
+    ${feedback ? `10. Revision feedback: ${feedback}` : ''}
     Do not use markdown formatting, bullet points, or introductory text. Just output the final image generation prompt.`
   });
 
@@ -240,7 +249,8 @@ export async function generateLook(
     prompt: synthesizedPrompt, 
     referenceUrls,
     referenceParts: pureImageParts,
-    faceSwapTargetUrl
+    faceSwapTargetUrl,
+    physicalDescription: p.model.physical_description,
   });
 
   const snapshot = [
@@ -252,6 +262,33 @@ export async function generateLook(
   const persistedSnapshot = snapshot.map(({ id, name, category }) => ({ id, name, image: '', category }));
   const itemIds = snapshot.map((s) => s.id);
 
+  // Download the temporary Replicate image and upload it to Supabase Storage
+  let finalImageUrl = result.dataUrl;
+  if (finalImageUrl.startsWith('http')) {
+    try {
+      const response = await fetch(finalImageUrl);
+      if (response.ok) {
+        const blob = await response.blob();
+        const fileExt = blob.type.split('/')[1] || 'jpg';
+        const fileName = `runway/${p.model.id}/${Date.now()}.${fileExt}`;
+        const { error: uploadError } = await supabase.storage
+          .from('model-photosheets')
+          .upload(fileName, blob, { contentType: blob.type, upsert: true });
+        
+        if (!uploadError) {
+          const { data: publicData } = supabase.storage
+            .from('model-photosheets')
+            .getPublicUrl(fileName);
+          finalImageUrl = publicData.publicUrl;
+        } else {
+          console.error('[Dr. Stylist] Supabase storage upload failed:', uploadError);
+        }
+      }
+    } catch (err) {
+      console.warn('[Dr. Stylist] Failed to fetch and upload runway look to Supabase, falling back to Replicate URL', err);
+    }
+  }
+
   const { data, error } = await supabase
     .from('runway_looks')
     .insert({
@@ -260,7 +297,7 @@ export async function generateLook(
       item_ids: itemIds,
       item_snapshot: persistedSnapshot,
       prompt,
-      image_url: result.dataUrl,
+      image_url: finalImageUrl,
       status: 'draft',
       feedback: feedback ?? '',
       mocked: result.mocked,
@@ -272,7 +309,7 @@ export async function generateLook(
   if (error || !data) {
     return {
       id: crypto.randomUUID(),
-      image_url: result.dataUrl,
+      image_url: finalImageUrl,
       status: 'draft',
       theme: p.theme,
       model_id: p.model.id,

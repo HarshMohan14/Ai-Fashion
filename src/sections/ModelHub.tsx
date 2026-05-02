@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Upload, X, Users, Check, Loader2, Trash2, FileImage } from 'lucide-react';
+import { Plus, Upload, X, Users, Check, Loader2, Trash2, FileImage, Sparkles } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useDirector } from '../context/DirectorContext';
 
@@ -17,7 +17,10 @@ type ModelPublic = {
     back?: string;
     closeup?: string;
     composite?: string;
+    left?: string;
+    right?: string;
   };
+  physical_description?: string;
   created_at: string;
 };
 
@@ -30,7 +33,7 @@ export function ModelHub() {
     setLoading(true);
     const { data } = await supabase
       .from('models_public')
-      .select('id, nickname, primary_photo_url, composite_url, photos, created_at')
+      .select('id, nickname, primary_photo_url, composite_url, photos, physical_description, created_at')
       .order('created_at', { ascending: false });
     setModels((data ?? []) as ModelPublic[]);
     setLoading(false);
@@ -145,9 +148,11 @@ function AddModelDrawer({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [files, setFiles] = useState<{ front: File | null; side: File | null; back: File | null; closeup: File | null }>({ front: null, side: null, back: null, closeup: null });
-  const [previews, setPreviews] = useState<{ front: string | null; side: string | null; back: string | null; closeup: string | null }>({ front: null, side: null, back: null, closeup: null });
+  const [files, setFiles] = useState<{ front: File | null; side: File | null; back: File | null; closeup: File | null; left: File | null; right: File | null }>({ front: null, side: null, back: null, closeup: null, left: null, right: null });
+  const [previews, setPreviews] = useState<{ front: string | null; side: string | null; back: string | null; closeup: string | null; left: string | null; right: string | null }>({ front: null, side: null, back: null, closeup: null, left: null, right: null });
   const [nickname, setNickname] = useState('');
+  const [physicalDescription, setPhysicalDescription] = useState('');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [step, setStep] = useState<'form' | 'saving' | 'done'>('form');
   const [error, setError] = useState<string | null>(null);
   const director = useDirector();
@@ -172,6 +177,43 @@ function AddModelDrawer({
   const clearSheet = (key: keyof typeof files) => {
     setFiles(f => ({ ...f, [key]: null }));
     setPreviews(p => ({ ...p, [key]: null }));
+  };
+
+  const analyzeBody = async () => {
+    const activeFiles = Object.values(files).filter(Boolean) as File[];
+    if (activeFiles.length === 0) {
+      setError('Upload at least one photo for Dr. Body to analyze.');
+      return;
+    }
+    setIsAnalyzing(true);
+    setError(null);
+    try {
+      const { GoogleGenerativeAI } = await import('@google/generative-ai');
+      const key = import.meta.env.VITE_GEMINI_API_KEY;
+      if (!key) throw new Error('Missing Gemini API Key for analysis');
+      const genAI = new GoogleGenerativeAI(key);
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+      const parts = await Promise.all(activeFiles.map(async (file) => {
+        const buffer = await file.arrayBuffer();
+        return {
+          inlineData: {
+            data: btoa(new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), '')),
+            mimeType: file.type
+          }
+        };
+      }));
+
+      const prompt = "Analyze these photos of a person. Describe their authentic physical build (e.g. plus-size, athletic, slim, stocky, curvy, broad-shouldered), apparent height/proportions, skin tone, hair, and facial features. Return ONLY a concise, plain-text paragraph that can be used to generate them accurately. Do not guess exact measurements if unsure, just use qualitative descriptors.";
+
+      const result = await model.generateContent([prompt, ...parts]);
+      const text = result.response.text();
+      setPhysicalDescription(text.trim());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Analysis failed');
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const save = async () => {
@@ -209,6 +251,7 @@ function AddModelDrawer({
           primary_photo_url: primaryUrl,
           composite_url: primaryUrl, // Fallback for backward compatibility
           photos: uploadedUrls,
+          physical_description: physicalDescription.trim() || null,
         })
         .select('id, nickname')
         .maybeSingle();
@@ -303,15 +346,17 @@ function AddModelDrawer({
               <FileImage className="w-4 h-4 text-cobalt dark:text-indigo_electric" />
               <div>
                 <h3 className="font-medium">Model Perspectives</h3>
-                <p className="text-xs text-neutral-500 mt-0.5">Upload 4 distinct angles for the highest AI face & body consistency.</p>
+                <p className="text-xs text-neutral-500 mt-0.5">Upload 6 distinct angles for the highest AI face & body consistency.</p>
               </div>
             </div>
             
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <AngleUploader angleKey="front" label="Front View" />
               <AngleUploader angleKey="side" label="Side View" />
               <AngleUploader angleKey="back" label="Back View" />
               <AngleUploader angleKey="closeup" label="Face Closeup" />
+              <AngleUploader angleKey="left" label="Left Profile" />
+              <AngleUploader angleKey="right" label="Right Profile" />
             </div>
           </section>
 
@@ -325,6 +370,26 @@ function AddModelDrawer({
                 className="lab-input"
               />
             </label>
+          </section>
+
+          <section>
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Physical Description</div>
+              <button 
+                onClick={(e) => { e.preventDefault(); analyzeBody(); }}
+                disabled={isAnalyzing} 
+                className="text-[10px] uppercase tracking-[0.1em] font-medium text-cobalt dark:text-indigo_electric hover:underline disabled:opacity-50 flex items-center gap-1"
+              >
+                {isAnalyzing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                Auto-Analyze
+              </button>
+            </div>
+            <textarea
+              value={physicalDescription}
+              onChange={(e) => setPhysicalDescription(e.target.value)}
+              placeholder="e.g. Stocky, heavily built, plus-size body type with broad shoulders. Average height. Olive skin tone."
+              className="lab-input min-h-[96px] resize-y"
+            />
           </section>
 
           {error && <div className="text-xs text-rose-500 bg-rose-500/10 p-3 rounded-lg border border-rose-500/20">{error}</div>}
