@@ -17,6 +17,21 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   line-height: 1.5;
+  overflow-x: hidden;
+}
+
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  min-width: 0;
 }
 
 h1, h2, h3, h4, h5 {
@@ -123,6 +138,22 @@ html { scroll-behavior: smooth; }
   .dark .lab-input:focus {
     border-color: #5B5BF6;
     box-shadow: 0 0 0 3px rgba(91,91,246,0.2);
+  }
+}
+
+@media (max-width: 640px) {
+  .bento {
+    padding: 1rem;
+    border-radius: 1rem;
+  }
+
+  .section-title {
+    font-size: 1.875rem;
+    line-height: 2.15rem;
+  }
+
+  .glass-card {
+    border-radius: 1rem;
   }
 }
 
