@@ -1,6 +1,20 @@
 import { supabase, WardrobeItem } from './supabase';
-import { renderLook, referenceToPart } from './nanoBanana';
+import {
+  generateGeminiContentWithRetry,
+  renderLook,
+  referenceToPart,
+  toGeminiImagePart,
+  type GeminiApiImagePart,
+} from './nanoBanana';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import {
+  feedbackFromRow,
+  fetchRagKnowledgeBaseRows,
+  formatRagKnowledgeForPrompt,
+  referenceFromRow,
+  type ModelReferenceImage,
+  type RagKnowledgeBaseFeedback,
+} from './ragKnowledgeBase';
 
 export type StylistModel = {
   id: string;
@@ -17,7 +31,10 @@ export type StylistModel = {
     right?: string;
   };
   physical_description?: string;
-  rag_memory?: string;
+  active_reference_image?: string;
+  active_reference_look_id?: string | null;
+  model_reference?: ModelReferenceImage;
+  rag_feedback?: RagKnowledgeBaseFeedback[];
 };
 
 export type Permutation = {
@@ -49,12 +66,34 @@ function pick<T>(arr: T[], rng: () => number): T {
 }
 
 export async function fetchStylistInputs() {
-  const [{ data: modelsData }, { data: itemsData }] = await Promise.all([
-    supabase.from('models_public').select('id, nickname, primary_photo_url, composite_url, photos, physical_description, rag_memory'),
+  const [{ data: modelsData }, { data: itemsData }, ragData] = await Promise.all([
+    supabase.from('models_public').select('id, nickname, primary_photo_url, composite_url, photos, physical_description'),
     supabase.from('wardrobe_items').select('*'),
+    fetchRagKnowledgeBaseRows(),
   ]);
+  const referencesByModel = new Map<string, ModelReferenceImage>();
+  const feedbackByModel = new Map<string, RagKnowledgeBaseFeedback[]>();
+
+  (ragData ?? []).forEach((row) => {
+    if (row.entry_type === 'reference' && row.is_active && !referencesByModel.has(row.model_id)) {
+      referencesByModel.set(row.model_id, referenceFromRow(row));
+    }
+
+    if (row.entry_type === 'feedback') {
+      const list = feedbackByModel.get(row.model_id) ?? [];
+      if (list.length < 8) list.push(feedbackFromRow(row));
+      feedbackByModel.set(row.model_id, list);
+    }
+  });
+  const models = ((modelsData ?? []) as StylistModel[]).map((model) => ({
+    ...model,
+    active_reference_image: referencesByModel.get(model.id)?.image_url,
+    active_reference_look_id: referencesByModel.get(model.id)?.look_id ?? null,
+    model_reference: referencesByModel.get(model.id),
+    rag_feedback: feedbackByModel.get(model.id) ?? [],
+  }));
   return {
-    models: (modelsData ?? []) as StylistModel[],
+    models,
     items: (itemsData ?? []) as WardrobeItem[],
     ageMap: {} as Record<string, number>,
   };
@@ -63,7 +102,8 @@ export async function fetchStylistInputs() {
 export type BatchOptions = {
   count: number;
   theme: string;
-  modelFilter: string; // 'all' or a specific model id
+  modelFilter?: string; // legacy: 'all' or a specific model id
+  modelFilterIds?: string[];
 };
 
 function isHostedPhotosheetUrl(url: string | null | undefined): url is string {
@@ -77,9 +117,12 @@ export function buildPermutations(
   seed = Date.now(),
 ): Permutation[] {
   const rng = mulberry32(seed);
-  const modelPool = opts.modelFilter === 'all'
-    ? models.filter((m) => isHostedPhotosheetUrl(m.composite_url))
-    : models.filter((m) => m.id === opts.modelFilter && isHostedPhotosheetUrl(m.composite_url));
+  const selectedIds = opts.modelFilterIds?.filter(Boolean) ?? [];
+  const modelPool = selectedIds.length > 0
+    ? models.filter((m) => selectedIds.includes(m.id) && isHostedPhotosheetUrl(m.composite_url))
+    : opts.modelFilter && opts.modelFilter !== 'all'
+      ? models.filter((m) => m.id === opts.modelFilter && isHostedPhotosheetUrl(m.composite_url))
+      : models.filter((m) => isHostedPhotosheetUrl(m.composite_url));
   if (!modelPool.length) return [];
 
   const topwear = items.filter((i) => i.category?.toLowerCase() === 'topwear' || i.category?.toLowerCase() === 'indian wear');
@@ -111,22 +154,12 @@ function mulberry32(seed: number) {
   };
 }
 
-const EDITORIAL_POSES = [
-  'three-quarter turn with one hand relaxed in the pocket and a confident side glance',
-  'mid-stride walking shot, slight motion in the fabric, looking off-frame',
-  'contrapposto stance, weight on the back leg, shoulders angled toward the light',
-  'arms loosely crossed, chin slightly lifted, direct editorial gaze',
-  'leaning subtly forward, hands tucked into pockets, head tilted',
-  'over-the-shoulder glance with the body turned away from the camera',
-  'hands adjusting a cuff or collar, gaze downcast, candid editorial moment',
-];
-
 export function buildPrompt(
   p: Permutation,
   feedback?: string,
   seed: number = Date.now(),
 ): string {
-  const pose = EDITORIAL_POSES[Math.floor(mulberry32(seed)() * EDITORIAL_POSES.length)];
+  void seed;
   const styleContext = p.theme.trim();
   const parts: string[] = [];
   parts.push(
@@ -145,12 +178,15 @@ export function buildPrompt(
     "The topwear must be worn on the upper body, bottomwear (if any) on the lower body, footwear (if any) on the feet, and accessories worn naturally as part of the outfit."
   );
   if (styleContext) {
-    parts.push(`User style context: ${styleContext}. Apply this only to styling mood, pose, setting, lighting, and editorial direction; never use it to change the person's identity.`);
+    parts.push(`User style context: ${styleContext}. Use this only to clarify garment coordination or outfit intent; never use it to change the person's identity, body, pose, or white studio background.`);
   }
-  parts.push(`Pose direction: ${pose}.`);
-  parts.push('Output one full-length editorial fashion composition with the complete outfit clearly visible on the model.');
+  parts.push('Output one full-length neutral studio fashion photograph with the complete outfit clearly visible on the model.');
   if (feedback) parts.push(`Revision: ${feedback}.`);
   return parts.join(' ');
+}
+
+export function compileRagKnowledge(model: StylistModel) {
+  return formatRagKnowledgeForPrompt(model.rag_feedback ?? []);
 }
 
 export async function generateLook(
@@ -161,7 +197,7 @@ export async function generateLook(
   void _age;
   const key = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
   if (!key) {
-    throw new Error('Missing VITE_GEMINI_API_KEY. Dr. Stylist needs Gemini to analyze the model and wardrobe.');
+    throw new Error('Missing VITE_GEMINI_API_KEY. Dr. Stylist needs Gemini to analyze references and generate runway images.');
   }
 
   const modelUrls: string[] = [];
@@ -177,6 +213,11 @@ export async function generateLook(
     modelLabels.push("Model Photosheet: This is the ONLY identity source — keep the exact face, skin tone, hair, height, and body proportions.");
   }
 
+  if (p.model.active_reference_image) {
+    modelUrls.push(p.model.active_reference_image);
+    modelLabels.push('Active Generated Reference: Use only for model consistency across face, body, hair, complexion, and overall presentation. Do not copy its outfit, background, pose, or styling.');
+  }
+
   if (modelUrls.length === 0) {
     throw new Error(`Model "${p.model.nickname}" has no valid photos attached.`);
   }
@@ -190,7 +231,7 @@ export async function generateLook(
 
   const referenceUrls = [...modelUrls, ...garmentUrls];
 
-  // Step 1: Synthesize the prompt using Gemini Vision
+  // Step 1: Synthesize the prompt using Gemini Vision.
   const genAI = new GoogleGenerativeAI(key);
   const referenceParts = await Promise.all(
     referenceUrls.map(async (url, index) => ({
@@ -200,11 +241,15 @@ export async function generateLook(
     }))
   );
 
-  const pose = EDITORIAL_POSES[Math.floor(Math.random() * EDITORIAL_POSES.length)];
   const styleContext = p.theme.trim();
 
-  const parts: any[] = [];
-  parts.push({ text: "You are an Elite Fashion Director. Your job is to translate the provided reference images into a highly detailed, professional text-to-image generation prompt." });
+  const ragKnowledgeText = compileRagKnowledge(p.model);
+
+  const parts: Array<{ text: string } | GeminiApiImagePart> = [];
+  parts.push({
+    text:
+      'You are an identity-preservation prompt writer for a fashion lab. Translate references into a precise photorealistic prompt that keeps the exact same model and selected garments.',
+  });
 
   for (const { index, part } of referenceParts) {
     let label = '';
@@ -213,44 +258,45 @@ export async function generateLook(
     } else {
       label = `reference_image_${index + 1} (wardrobe garment): dress the same subject in this garment exactly as shown.`;
     }
-    parts.push({ text: label }, part);
+    parts.push({ text: label }, toGeminiImagePart(part));
   }
 
   parts.push({
-    text: `Write a continuous, photorealistic image generation prompt describing this exact person wearing these exact clothes. 
+    text: `Write a continuous, photorealistic image generation prompt describing this exact person wearing these exact clothes.
     Crucial Directives:
-    1. Setting: The final output must be set on a clean, white studio background.
-    2. Garment Details (CRITICAL): The final image generation model will NOT see the reference images. You MUST describe the clothing references in excruciating visual detail. Describe the exact colors, patterns, fabric textures, cuts, lengths, and how they drape on the model.
-    3. Photography Style: Must look like an unretouched, raw, high-end editorial photograph. Specify "Shot on DSLR, 85mm lens, natural skin texture, visible pores, subtle skin imperfections, raw photography, highly detailed."
-    4. Negative constraints: Strictly avoid any 3D render, CGI, airbrushed, plastic, or "AI-generated" aesthetic. Skin should not look perfectly smooth.
-    5. Styling: The styling should reflect a modern Indian fashion sense. Keep it accessible and culturally resonant; do NOT make it look like overly abstract or bizarre high-fashion avant-garde.
-    6. Pose direction: ${pose}.
-    7. Incorporate this specific user style context: ${styleContext}.
-    ${p.model.physical_description ? `8. PHYSICAL AUTHENTICITY (CRITICAL): The subject's authentic physical description is: "${p.model.physical_description}". You MUST strictly adhere to this body type. Do NOT default to a slim or idealized fashion mannequin body. Preserve the authentic physical mass and structure.` : ''}
-    ${p.model.rag_memory ? `9. IDENTITY RAG MEMORY (CRITICAL): Past generations of this specific model failed due to these flaws. You MUST enforce these rules to avoid repeating past mistakes: \n${p.model.rag_memory}` : ''}
-    ${feedback ? `10. Revision feedback: ${feedback}` : ''}
+    1. Identity: The person must remain exactly the same as the model references. Preserve face, jaw, eyes, nose, hair, skin tone, body mass, height impression, posture, proportions, and shoulder-to-waist structure.
+    2. Setting: Use a clean white studio background with no editorial scene, no props, no stylized environment, and no mood-driven transformation.
+    3. Pose: Use a simple natural standing full-body pose that shows the complete outfit. Do not invent dramatic fashion poses.
+    4. Garment Details: The final image generation model will NOT see the reference images. Describe the clothing references in exact visual detail: colors, patterns, fabric textures, cuts, lengths, and how they sit naturally on the same model.
+    5. Photography: Raw realistic studio photograph, DSLR clarity, natural skin texture, visible pores, normal human imperfections, accurate hands and limbs, no 3D render, no CGI, no airbrushed plastic look.
+    6. Style context: ${styleContext ? `${styleContext}. Use this only to clarify garment coordination or outfit intent; do not change identity, body, pose, or background.` : 'No additional styling. Keep the output neutral and identity-first.'}
+    ${p.model.physical_description ? `7. Physical authenticity: ${p.model.physical_description}. Do not slim, beautify, age-shift, reshape, or idealize the model.` : ''}
+    ${ragKnowledgeText ? `8. rag_knowledge_base feedback for this model, grouped by Face, Body, Style, Hair, and Complexion:\n${ragKnowledgeText}\nApply these corrections for consistency.` : ''}
     Do not use markdown formatting, bullet points, or introductory text. Just output the final image generation prompt.`
   });
 
   const geminiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { temperature: 0.7 } });
-  const aiResult = await geminiModel.generateContent(parts);
+  const aiResult = await generateGeminiContentWithRetry(
+    () => geminiModel.generateContent(parts),
+    'Runway prompt synthesis',
+  );
   let synthesizedPrompt = aiResult.response.text().trim();
-  synthesizedPrompt = synthesizedPrompt.slice(0, 800); // Truncate to avoid URI Too Long errors
+  synthesizedPrompt = synthesizedPrompt.slice(0, 800);
   
   if (import.meta.env.DEV) {
     console.debug('[Dr. Stylist] Final Synthesized Prompt:', synthesizedPrompt);
   }
 
-  // Step 2: Render the image using Nano Banana
+  // Step 2: Render the image using Nano Banana.
   const pureImageParts = referenceParts.map(r => r.part);
-  const faceSwapTargetUrl = p.model.photos?.closeup || p.model.composite_url || p.model.primary_photo_url;
+  const faceSwapTargetUrl = p.model.photos?.closeup || p.model.active_reference_image || p.model.composite_url || p.model.primary_photo_url;
   
   const result = await renderLook({ 
     prompt: synthesizedPrompt, 
     referenceUrls,
     referenceParts: pureImageParts,
     faceSwapTargetUrl,
-    physicalDescription: p.model.physical_description,
+    modelReferenceCount: modelUrls.length,
   });
 
   const snapshot = [
@@ -262,7 +308,7 @@ export async function generateLook(
   const persistedSnapshot = snapshot.map(({ id, name, category }) => ({ id, name, image: '', category }));
   const itemIds = snapshot.map((s) => s.id);
 
-  // Download the temporary Replicate image and upload it to Supabase Storage
+  // Download any temporary provider image and upload it to Supabase Storage.
   let finalImageUrl = result.dataUrl;
   if (finalImageUrl.startsWith('http')) {
     try {
@@ -296,7 +342,7 @@ export async function generateLook(
       theme: p.theme,
       item_ids: itemIds,
       item_snapshot: persistedSnapshot,
-      prompt,
+      prompt: synthesizedPrompt,
       image_url: finalImageUrl,
       status: 'draft',
       feedback: feedback ?? '',
@@ -318,7 +364,7 @@ export async function generateLook(
       feedback: feedback ?? '',
       mocked: result.mocked,
       model_used: result.model,
-      prompt,
+      prompt: synthesizedPrompt,
       created_at: new Date().toISOString(),
     };
   }

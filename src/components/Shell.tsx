@@ -89,7 +89,7 @@ export function Shell({
                   <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60 animate-ping" />
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
                 </span>
-                All six doctors online
+                All lab departments online
               </div>
             </div>
           </div>

@@ -15,6 +15,7 @@ import {
   Trash2,
   Eye,
   Download,
+  Bookmark,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import {
@@ -27,6 +28,13 @@ import {
 } from '../lib/drStylist';
 import { WardrobeItem } from '../lib/supabase';
 import { useDirector } from '../context/DirectorContext';
+import {
+  feedbackMetrics,
+  saveModelReferenceImage,
+  saveRagKnowledgeFeedback,
+  summarizeRagFeedback,
+  type RagFeedbackInput,
+} from '../lib/ragKnowledgeBase';
 
 type Status = 'draft' | 'in_review' | 'approved';
 type BatchProgress = { running: boolean; current: number; total: number; current_model?: string };
@@ -48,7 +56,8 @@ export function Runway() {
 
   const [count, setCount] = useState<number>(5);
   const [styleContext, setStyleContext] = useState<string>('');
-  const [modelFilter, setModelFilter] = useState<string>('all');
+  const [generationModelIds, setGenerationModelIds] = useState<string[]>([]);
+  const [lookModelFilter, setLookModelFilter] = useState<string>('all');
 
   const [progress, setProgress] = useState<BatchProgress>({ running: false, current: 0, total: 0 });
   const [feedbackFor, setFeedbackFor] = useState<GeneratedLook | null>(null);
@@ -59,43 +68,60 @@ export function Runway() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const inputs = await fetchStylistInputs();
-    setModels(inputs.models);
-    setItems(inputs.items);
-    const { data, error } = await supabase
-      .from('runway_looks')
-      .select(RUNWAY_LOOK_COLUMNS)
-      .order('created_at', { ascending: false })
-      .limit(20);
-    if (error) {
+    try {
+      const inputs = await fetchStylistInputs();
+      setModels(inputs.models);
+      setGenerationModelIds((current) => {
+        const availableIds = inputs.models.filter((m) => isHostedPhotosheetUrl(m.composite_url)).map((m) => m.id);
+        const stillAvailable = current.filter((id) => availableIds.includes(id));
+        return stillAvailable.length > 0 ? stillAvailable : availableIds;
+      });
+      setItems(inputs.items);
+      const { data, error } = await supabase
+        .from('runway_looks')
+        .select(RUNWAY_LOOK_COLUMNS)
+        .order('created_at', { ascending: false })
+        .limit(20);
+      if (error) {
+        push(
+          'Dr. Stylist',
+          error.message || 'Could not load existing Runway looks from Supabase.',
+        );
+        setLooks([]);
+      } else {
+        setLooks(((data ?? []) as GeneratedLook[]).map((look) => hydrateLookSnapshot(look, inputs.items)));
+      }
+
+      const topwear = inputs.items.filter((i) => i.category?.toLowerCase() === 'topwear' || i.category?.toLowerCase() === 'indian wear');
+      const missing: string[] = [];
+      if (!inputs.models.length) missing.push('models');
+      else if (!inputs.models.some((m) => isHostedPhotosheetUrl(m.composite_url))) missing.push('hosted model photosheets');
+      if (!topwear.length) missing.push('topwear or indian wear');
+      setMissingInputs(missing.length ? missing.join(', ') : null);
+    } catch (error) {
+      console.error(error);
       push(
         'Dr. Stylist',
-        error.message || 'Could not load existing Runway looks from Supabase.',
+        error instanceof Error
+          ? `Could not load Runway data from Supabase: ${error.message}`
+          : 'Could not load Runway data from Supabase. Please refresh and try again.',
       );
       setLooks([]);
-    } else {
-      setLooks(((data ?? []) as GeneratedLook[]).map((look) => hydrateLookSnapshot(look, inputs.items)));
+      setMissingInputs('Supabase connection');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-
-    const topwear = inputs.items.filter((i) => i.category?.toLowerCase() === 'topwear' || i.category?.toLowerCase() === 'indian wear');
-    const missing: string[] = [];
-    if (!inputs.models.length) missing.push('models');
-    else if (!inputs.models.some((m) => isHostedPhotosheetUrl(m.composite_url))) missing.push('hosted model photosheets');
-    if (!topwear.length) missing.push('topwear or indian wear');
-    setMissingInputs(missing.length ? missing.join(', ') : null);
   }, [push]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
   const filtered = useMemo(
-    () => (filter === 'all' ? looks : looks.filter((l) => l.status === filter)),
-    [looks, filter],
-  );
-
-  const selectedModel = useMemo(
-    () => (modelFilter === 'all' ? null : models.find((m) => m.id === modelFilter) ?? null),
-    [modelFilter, models],
+    () => looks.filter((look) => {
+      const statusMatch = filter === 'all' || look.status === filter;
+      const modelMatch = lookModelFilter === 'all' || look.model_id === lookModelFilter;
+      return statusMatch && modelMatch;
+    }),
+    [filter, lookModelFilter, looks],
   );
 
   const modelsWithPhotosheets = useMemo(
@@ -103,20 +129,28 @@ export function Runway() {
     [models],
   );
 
+  const selectedGenerationModels = useMemo(
+    () => modelsWithPhotosheets.filter((model) => generationModelIds.includes(model.id)),
+    [generationModelIds, modelsWithPhotosheets],
+  );
+
+  const selectedGalleryModel = useMemo(
+    () => (lookModelFilter === 'all' ? null : models.find((m) => m.id === lookModelFilter) ?? null),
+    [lookModelFilter, models],
+  );
+
   const generationBlocker = useMemo(() => {
     if (missingInputs) return `Missing inputs: ${missingInputs}. Seed the Wardrobe and Model Hub before generating looks.`;
     if (!styleContext.trim()) return 'Add a style context before generating looks.';
-    if (modelFilter === 'all' && modelsWithPhotosheets.length === 0) return 'Upload or backfill a hosted model photosheet first.';
-    if (modelFilter !== 'all' && selectedModel && !isHostedPhotosheetUrl(selectedModel.composite_url)) {
-      return 'The selected model still has a base64 or empty photosheet. Run the backfill or re-upload it in Model Hub.';
-    }
+    if (modelsWithPhotosheets.length === 0) return 'Upload or backfill a hosted model photosheet first.';
+    if (selectedGenerationModels.length === 0) return 'Select at least one model for this batch.';
     return null;
-  }, [missingInputs, modelFilter, modelsWithPhotosheets.length, selectedModel, styleContext]);
+  }, [missingInputs, modelsWithPhotosheets.length, selectedGenerationModels.length, styleContext]);
 
   const runBatch = async () => {
     if (generationBlocker) return;
     const style = styleContext.trim();
-    const perms = buildPermutations(models, items, { count, theme: style, modelFilter });
+    const perms = buildPermutations(models, items, { count, theme: style, modelFilterIds: generationModelIds });
     if (!perms.length) {
       setMissingInputs('could not build any permutations — check the Wardrobe and Model Hub');
       return;
@@ -166,30 +200,86 @@ export function Runway() {
     await supabase.from('runway_looks').delete().eq('id', id);
   };
 
-  const regenerateWithFeedback = async (look: GeneratedLook, feedback: string) => {
+  const selectAllGenerationModels = () => {
+    setGenerationModelIds(modelsWithPhotosheets.map((model) => model.id));
+  };
+
+  const toggleGenerationModel = (model: StylistModel) => {
+    if (!isHostedPhotosheetUrl(model.composite_url)) return;
+    setGenerationModelIds((current) => (
+      current.includes(model.id)
+        ? current.filter((id) => id !== model.id)
+        : [...current, model.id]
+    ));
+  };
+
+  const setLookAsReference = async (look: GeneratedLook) => {
+    try {
+      const reference = await saveModelReferenceImage(look.model_id, look.id, look.image_url);
+      if (!reference) return;
+      setModels((list) => list.map((model) => (
+        model.id === look.model_id
+          ? {
+              ...model,
+              active_reference_image: reference.image_url,
+              active_reference_look_id: reference.look_id,
+              model_reference: reference,
+            }
+          : model
+      )));
+      push('Dr. Stylist', 'This generated photo is now the active model reference for future consistency.');
+    } catch (e) {
+      push(
+        'Dr. Stylist',
+        e instanceof Error ? `Could not set reference photo: ${e.message}` : 'Could not set reference photo.',
+      );
+    }
+  };
+
+  const regenerateWithFeedback = async (look: GeneratedLook, feedback: RagFeedbackInput) => {
     setFeedbackFor(null);
     const model = models.find((m) => m.id === look.model_id);
     const top = items.find((i) => i.id === look.item_ids[0]);
     const bot = items.find((i) => i.id === look.item_ids[1]);
     const shoe = items.find((i) => i.id === look.item_ids[2]);
     const acc = look.item_ids[3] ? items.find((i) => i.id === look.item_ids[3]) : null;
-    if (!model || !top || !bot || !shoe) return;
+    if (!model || !top) return;
+
+    let modelForGeneration = model;
+    const feedbackSummary = summarizeRagFeedback(feedback);
+    try {
+      const savedFeedback = await saveRagKnowledgeFeedback(model.id, look.id, feedback);
+      if (savedFeedback) {
+        modelForGeneration = {
+          ...model,
+          rag_feedback: [savedFeedback, ...(model.rag_feedback ?? [])].slice(0, 8),
+        };
+        setModels((list) => list.map((m) => (m.id === model.id ? modelForGeneration : m)));
+      }
+    } catch (e) {
+      push(
+        'Dr. Stylist',
+        e instanceof Error
+          ? `Could not save RAG knowledge base feedback: ${e.message}`
+          : 'Could not save RAG knowledge base feedback.',
+      );
+    }
 
     const perm: Permutation = {
-      model,
+      model: modelForGeneration,
       topwear: top,
-      bottomwear: bot,
-      footwear: shoe,
+      bottomwear: bot ?? null,
+      footwear: shoe ?? null,
       accessory: acc ?? null,
       theme: look.theme,
     };
 
     setProgress({ running: true, current: 0, total: 1, current_model: model.nickname });
     try {
-      const fresh = await generateLook(perm, undefined, feedback);
+      const fresh = await generateLook(perm, undefined, feedbackSummary);
       setLooks((prev) => [fresh, ...prev]);
-      await supabase.from('runway_looks').update({ status: 'in_review', feedback }).eq('id', look.id);
-      setLooks((prev) => prev.map((l) => (l.id === look.id ? { ...l, status: 'in_review', feedback } : l)));
+      await supabase.from('runway_looks').update({ status: 'in_review', feedback: feedbackSummary }).eq('id', look.id);
+      setLooks((prev) => prev.map((l) => (l.id === look.id ? { ...l, status: 'in_review', feedback: feedbackSummary } : l)));
     } catch (e) {
       console.error(e);
       push(
@@ -256,15 +346,10 @@ export function Runway() {
               className="lab-input"
             />
           </ControlField>
-          <ControlField className="md:col-span-2" label="Model filter" icon={<Users className="w-3.5 h-3.5" />}>
-            <select value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} className="lab-input">
-              <option value="all">Use all models with photosheets ({modelsWithPhotosheets.length})</option>
-              {models.map((m) => (
-                <option key={m.id} value={m.id} disabled={!isHostedPhotosheetUrl(m.composite_url)}>
-                  Only: {m.nickname}{isHostedPhotosheetUrl(m.composite_url) ? '' : ' (needs hosted photosheet)'}
-                </option>
-              ))}
-            </select>
+          <ControlField className="md:col-span-2" label="Models selected" icon={<Users className="w-3.5 h-3.5" />}>
+            <div className="h-11 flex items-center rounded-lg border border-lab-border-light dark:border-lab-border px-3 text-sm text-neutral-700 dark:text-neutral-200">
+              {selectedGenerationModels.length} of {modelsWithPhotosheets.length} models
+            </div>
           </ControlField>
           <div className="flex items-end">
             <button
@@ -278,6 +363,39 @@ export function Runway() {
                 <><Sparkles className="w-3.5 h-3.5" /> Generate batch</>
               )}
             </button>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
+              <Users className="w-3.5 h-3.5" /> Choose models
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={selectAllGenerationModels}
+                className="px-3 py-1.5 rounded-full border border-lab-border-light dark:border-lab-border text-[11px] font-medium hover:bg-black/5 dark:hover:bg-white/5"
+              >
+                Select all
+              </button>
+              <button
+                onClick={() => setGenerationModelIds([])}
+                className="px-3 py-1.5 rounded-full border border-lab-border-light dark:border-lab-border text-[11px] font-medium hover:bg-black/5 dark:hover:bg-white/5"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">
+            {models.map((model) => (
+              <ModelSelectTile
+                key={model.id}
+                model={model}
+                selected={generationModelIds.includes(model.id)}
+                disabled={!isHostedPhotosheetUrl(model.composite_url)}
+                onClick={() => toggleGenerationModel(model)}
+              />
+            ))}
           </div>
         </div>
 
@@ -296,6 +414,32 @@ export function Runway() {
         <FilterChip label={`Approved · ${counts.approved}`} active={filter === 'approved'} onClick={() => setFilter('approved')} />
       </div>
 
+      <div className="space-y-2">
+        <div className="flex gap-2 overflow-x-auto pb-1 custom-scroll">
+          <ModelFilterChip
+            label="Show all"
+            active={lookModelFilter === 'all'}
+            count={looks.length}
+            onClick={() => setLookModelFilter('all')}
+          />
+          {models.map((model) => (
+            <ModelFilterChip
+              key={model.id}
+              label={model.nickname}
+              imageUrl={modelFaceThumb(model)}
+              active={lookModelFilter === model.id}
+              count={looks.filter((look) => look.model_id === model.id).length}
+              onClick={() => setLookModelFilter(model.id)}
+            />
+          ))}
+        </div>
+        {selectedGalleryModel && (
+          <div className="text-xs text-neutral-500">
+            Showing Runway looks for {selectedGalleryModel.nickname}. Use Show all to return to every model.
+          </div>
+        )}
+      </div>
+
       {/* Masonry */}
       {loading ? (
         <MasonrySkeleton />
@@ -308,7 +452,7 @@ export function Runway() {
           <div className="text-sm text-neutral-500 mt-1.5 max-w-md">
             {looks.length === 0
               ? 'Configure a batch above and let Dr. Stylist compose the first editorial frames.'
-              : 'Try a different status filter.'}
+              : 'Try a different status or model filter.'}
           </div>
         </div>
       ) : (
@@ -319,9 +463,11 @@ export function Runway() {
                 key={look.id}
                 look={look}
                 model={models.find((m) => m.id === look.model_id)}
+                isReference={models.some((m) => m.id === look.model_id && m.active_reference_look_id === look.id)}
                 onApprove={() => updateStatus(look.id, 'approved')}
                 onDraft={() => updateStatus(look.id, 'draft')}
                 onRequestFeedback={() => setFeedbackFor(look)}
+                onSetReference={() => setLookAsReference(look)}
                 onDelete={() => removeLook(look.id)}
                 onZoom={() => setLightbox(look)}
               />
@@ -384,6 +530,103 @@ function hydrateLookSnapshot(look: GeneratedLook, items: WardrobeItem[]): Genera
   return { ...look, item_ids: itemIds, item_snapshot: snapshot };
 }
 
+function modelFaceThumb(model: StylistModel) {
+  return model.photos?.closeup
+    || model.photos?.front
+    || model.primary_photo_url
+    || model.composite_url
+    || '';
+}
+
+function modelInitials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('') || 'M';
+}
+
+function ModelSelectTile({
+  model,
+  selected,
+  disabled,
+  onClick,
+}: {
+  model: StylistModel;
+  selected: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const thumb = modelFaceThumb(model);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`text-left rounded-lg border p-2 transition disabled:opacity-45 disabled:cursor-not-allowed ${
+        selected
+          ? 'border-cobalt dark:border-indigo_electric bg-cobalt/5 dark:bg-indigo_electric/10'
+          : 'border-lab-border-light dark:border-lab-border hover:bg-black/5 dark:hover:bg-white/5'
+      }`}
+    >
+      <div className="relative aspect-square rounded-md overflow-hidden bg-neutral-100 dark:bg-neutral-900">
+        {thumb ? (
+          <img src={thumb} alt={model.nickname} className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full grid place-items-center text-lg font-display text-neutral-500">
+            {modelInitials(model.nickname)}
+          </div>
+        )}
+        {selected && (
+          <span className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-cobalt dark:bg-indigo_electric text-white grid place-items-center shadow-boutique">
+            <Check className="w-3.5 h-3.5" />
+          </span>
+        )}
+      </div>
+      <div className="mt-2 text-xs font-medium truncate">{model.nickname}</div>
+      <div className="text-[10px] text-neutral-500 truncate">
+        {disabled ? 'Needs photosheet' : selected ? 'Selected' : 'Available'}
+      </div>
+    </button>
+  );
+}
+
+function ModelFilterChip({
+  label,
+  imageUrl,
+  active,
+  count,
+  onClick,
+}: {
+  label: string;
+  imageUrl?: string;
+  active: boolean;
+  count: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`shrink-0 flex items-center gap-2 pl-1.5 pr-3 py-1.5 rounded-full border text-xs font-medium transition ${
+        active
+          ? 'bg-cobalt dark:bg-indigo_electric text-white border-transparent'
+          : 'border-lab-border-light dark:border-lab-border text-neutral-700 dark:text-neutral-300 hover:bg-black/5 dark:hover:bg-white/5'
+      }`}
+    >
+      {imageUrl ? (
+        <img src={imageUrl} alt="" className="w-7 h-7 rounded-full object-cover bg-white" />
+      ) : (
+        <span className={`w-7 h-7 rounded-full grid place-items-center ${active ? 'bg-white/20' : 'bg-black/5 dark:bg-white/10'}`}>
+          {label === 'Show all' ? <Users className="w-3.5 h-3.5" /> : modelInitials(label)}
+        </span>
+      )}
+      <span className="max-w-[9rem] truncate">{label}</span>
+      <span className={active ? 'text-white/75' : 'text-neutral-500'}>{count}</span>
+    </button>
+  );
+}
+
 function ControlField({
   label,
   icon,
@@ -423,17 +666,21 @@ function FilterChip({ label, active, onClick }: { label: string; active: boolean
 function LookCard({
   look,
   model,
+  isReference,
   onApprove,
   onDraft,
   onRequestFeedback,
+  onSetReference,
   onDelete,
   onZoom,
 }: {
   look: GeneratedLook;
   model?: StylistModel;
+  isReference: boolean;
   onApprove: () => void;
   onDraft: () => void;
   onRequestFeedback: () => void;
+  onSetReference: () => void;
   onDelete: () => void;
   onZoom: () => void;
 }) {
@@ -462,6 +709,7 @@ function LookCard({
         )}
 
         <div className="absolute top-3 left-3 flex gap-1.5 flex-wrap">
+          {isReference && <span className="chip bg-cobalt text-white border-transparent"><Bookmark className="w-3 h-3" /> Reference</span>}
           <StatusBadge status={look.status as Status} />
           {look.mocked && <span className="chip bg-amber-500/80 text-white border-transparent">Simulated</span>}
         </div>
@@ -498,7 +746,14 @@ function LookCard({
           </button>
         )}
         <button onClick={onRequestFeedback} className="px-3 py-2 rounded-lg border border-lab-border-light dark:border-lab-border text-xs font-medium hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-1.5">
-          <RotateCcw className="w-3.5 h-3.5" /> Regenerate
+          <RotateCcw className="w-3.5 h-3.5" /> Feedback
+        </button>
+        <button
+          onClick={onSetReference}
+          disabled={isReference}
+          className="px-3 py-2 rounded-lg border border-lab-border-light dark:border-lab-border text-xs font-medium hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-1.5 disabled:opacity-50"
+        >
+          <Bookmark className="w-3.5 h-3.5" /> {isReference ? 'Reference' : 'Set reference'}
         </button>
       </div>
     </motion.article>
@@ -582,9 +837,27 @@ function FeedbackModal({
 }: {
   look: GeneratedLook;
   onClose: () => void;
-  onSubmit: (feedback: string) => void;
+  onSubmit: (feedback: RagFeedbackInput) => void;
 }) {
-  const [text, setText] = useState(look.feedback || '');
+  void look;
+  const [feedback, setFeedback] = useState<RagFeedbackInput>(() => ({
+    face: { score: 3, note: '' },
+    body: { score: 3, note: '' },
+    style: { score: 3, note: '' },
+    hair: { score: 3, note: '' },
+    complexion: { score: 3, note: '' },
+  }));
+
+  const updateMetric = (
+    key: keyof RagFeedbackInput,
+    patch: Partial<RagFeedbackInput[keyof RagFeedbackInput]>,
+  ) => {
+    setFeedback((current) => ({
+      ...current,
+      [key]: { ...current[key], ...patch },
+    }));
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -602,25 +875,51 @@ function FeedbackModal({
       >
         <div className="flex items-center gap-2 mb-3">
           <MessageSquareMore className="w-4 h-4 text-cobalt dark:text-indigo_electric" />
-          <div className="font-medium">Tell Dr. Stylist what to fix</div>
+          <div className="font-medium">rag_knowledge_base feedback</div>
         </div>
-        <textarea
-          autoFocus
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="e.g. The tuck of the shirt is messy — keep it crisp and front-tucked."
-          className="lab-input w-full h-32 resize-none"
-        />
+        <div className="space-y-3 max-h-[58vh] overflow-y-auto pr-1 custom-scroll">
+          {feedbackMetrics.map((metric, index) => (
+            <div key={metric.key} className="rounded-xl border border-lab-border-light dark:border-lab-border p-3">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">{metric.label}</div>
+                <div className="flex gap-1">
+                  {[1, 2, 3, 4, 5].map((score) => {
+                    const active = feedback[metric.key].score === score;
+                    return (
+                      <button
+                        key={score}
+                        onClick={() => updateMetric(metric.key, { score })}
+                        className={`w-7 h-7 rounded-full text-xs font-semibold border transition ${
+                          active
+                            ? 'bg-cobalt dark:bg-indigo_electric text-white border-transparent'
+                            : 'border-lab-border-light dark:border-lab-border hover:bg-black/5 dark:hover:bg-white/5'
+                        }`}
+                      >
+                        {score}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <textarea
+                autoFocus={index === 0}
+                value={feedback[metric.key].note}
+                onChange={(e) => updateMetric(metric.key, { note: e.target.value })}
+                placeholder={`${metric.label} note for future consistency...`}
+                className="lab-input w-full h-20 resize-none"
+              />
+            </div>
+          ))}
+        </div>
         <div className="flex items-center gap-2 mt-4">
           <button onClick={onClose} className="px-4 py-2 rounded-full border border-lab-border-light dark:border-lab-border text-sm hover:bg-black/5 dark:hover:bg-white/5">
             Cancel
           </button>
           <button
-            onClick={() => text.trim() && onSubmit(text.trim())}
-            disabled={!text.trim()}
+            onClick={() => onSubmit(feedback)}
             className="btn-primary ml-auto disabled:opacity-40"
           >
-            <RotateCcw className="w-3.5 h-3.5" /> Regenerate
+            <RotateCcw className="w-3.5 h-3.5" /> Save RAG & regenerate
           </button>
         </div>
       </motion.div>

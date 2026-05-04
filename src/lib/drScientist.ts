@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import { GoogleGenerativeAI, SchemaType, type Schema } from '@google/generative-ai';
 import { removeBackground } from '@imgly/background-removal';
 
 export type BoundingBox = {
@@ -59,7 +59,7 @@ Rules:
 - Return confidence as a number 0-1.
 - If the image does not contain a person or fashion items, return { "items": [] }.`;
 
-const RESPONSE_SCHEMA = {
+const RESPONSE_SCHEMA: Schema = {
   type: SchemaType.OBJECT,
   properties: {
     items: {

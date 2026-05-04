@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import { GoogleGenerativeAI, SchemaType, type Schema } from '@google/generative-ai';
 
 const MODELS = ['gemini-1.5-pro-latest', 'gemini-1.5-pro', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-1.5-flash-latest'];
 
@@ -51,7 +51,7 @@ Your job:
 
 JSON only. No prose outside schema.`;
 
-const RESPONSE_SCHEMA = {
+const RESPONSE_SCHEMA: Schema = {
   type: SchemaType.OBJECT,
   properties: {
     physique_description: { type: SchemaType.STRING },
@@ -95,7 +95,7 @@ const RESPONSE_SCHEMA = {
   required: ['physique_description', 'body_type', 'shoulder_to_waist_ratio', 'crop_coordinates', 'facial_metadata', 'joint_map'],
 };
 
-function cropSchema() {
+function cropSchema(): Schema {
   return {
     type: SchemaType.OBJECT,
     properties: {
@@ -107,14 +107,14 @@ function cropSchema() {
     required: ['x', 'y', 'width', 'height'],
   };
 }
-function pointSchema() {
+function pointSchema(): Schema {
   return {
     type: SchemaType.OBJECT,
     properties: { x: { type: SchemaType.NUMBER }, y: { type: SchemaType.NUMBER } },
     required: ['x', 'y'],
   };
 }
-function pairSchema() {
+function pairSchema(): Schema {
   return {
     type: SchemaType.OBJECT,
     properties: { left: pointSchema(), right: pointSchema() },

@@ -11,9 +11,23 @@ import { Scenarios } from './sections/Scenarios';
 import { Runway } from './sections/Runway';
 import { Looks } from './sections/Looks';
 import { Analytics } from './sections/Analytics';
+import { DateOrDump } from './sections/DateOrDump';
 
 export default function App() {
   const [section, setSection] = useState<SectionKey>('boardroom');
+  const isGameRoute = typeof window !== 'undefined'
+    && window.location.pathname.replace(/\/+$/, '') === '/game';
+
+  if (isGameRoute) {
+    return (
+      <ThemeProvider>
+        <DirectorProvider>
+          <DateOrDump />
+          <DirectorToasts />
+        </DirectorProvider>
+      </ThemeProvider>
+    );
+  }
 
   return (
     <ThemeProvider>

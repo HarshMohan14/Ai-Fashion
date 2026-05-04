@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, Upload, X, Users, Check, Loader2, Trash2, FileImage, Sparkles } from 'lucide-react';
 import { supabase } from '../lib/supabase';
