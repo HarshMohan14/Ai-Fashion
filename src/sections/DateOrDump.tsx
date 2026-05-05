@@ -1,18 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
+  ChevronLeft,
+  Gem,
   Heart,
-  Hourglass,
   Loader2,
-  Music,
-  RotateCcw,
-  Share2,
-  Sparkles,
-  Star,
-  Trophy,
-  Volume2,
-  VolumeX,
+  Plus,
   Zap,
 } from 'lucide-react';
 import { useDirector } from '../context/DirectorContext';
@@ -22,7 +16,6 @@ import {
   completeDateOrDumpSession,
   createDateOrDumpSession,
   fetchDateOrDumpGameData,
-  GAME_SCENARIOS,
   generateDateOrDumpResult,
   getDateOrDumpAnonymousPlayerId,
   recordDateOrDumpDuel,
@@ -35,10 +28,28 @@ import {
 } from '../lib/dateOrDump';
 
 const MAX_DUELS = 10;
-const REVEAL_DELAY_MS = 720;
+const REVEAL_DELAY_MS = 900;
 const ROUND_TIME_SECONDS = 10;
 
 type Phase = 'loading' | 'landing' | 'playing' | 'result';
+type DateOrDumpResultCardId = 'papa' | 'gym' | 'soft';
+
+type DateOrDumpResultCardConfig = {
+  id: DateOrDumpResultCardId;
+  src: string;
+  alt: string;
+};
+
+const DATE_OR_DUMP_RESULT_CARD_LIST: DateOrDumpResultCardConfig[] = [
+  { id: 'papa', src: '/date-or-dump/papa-ki-pari-picker.png', alt: 'Papa Ki Pari Picker result card' },
+  { id: 'gym', src: '/date-or-dump/gym-bro-survivor.png', alt: 'Gym Bro Survivor result card' },
+  { id: 'soft', src: '/date-or-dump/soft-boy-magnet.png', alt: 'Soft Boy Magnet result card' },
+];
+
+const DATE_OR_DUMP_RESULT_CARDS = DATE_OR_DUMP_RESULT_CARD_LIST.reduce(
+  (cards, card) => ({ ...cards, [card.id]: card }),
+  {} as Record<DateOrDumpResultCardId, DateOrDumpResultCardConfig>,
+);
 
 export function DateOrDump() {
   const anonymousPlayerId = useMemo(() => getDateOrDumpAnonymousPlayerId(), []);
@@ -50,6 +61,7 @@ export function DateOrDump() {
   const [answers, setAnswers] = useState<DateOrDumpAnswer[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [selectedSide, setSelectedSide] = useState<DateOrDumpSide | null>(null);
+  const [roseSide, setRoseSide] = useState<DateOrDumpSide | null>(null);
   const [result, setResult] = useState<DateOrDumpResult | null>(null);
   const [resultLoading, setResultLoading] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -58,8 +70,6 @@ export function DateOrDump() {
   const [timeLeft, setTimeLeft] = useState(ROUND_TIME_SECONDS);
   const [timedOutCount, setTimedOutCount] = useState(0);
   const [timedOutRoundId, setTimedOutRoundId] = useState<string | null>(null);
-  const [musicEnabled, setMusicEnabled] = useState(false);
-  const [soundEnabled, setSoundEnabled] = useState(true);
 
   const startedAtRef = useRef(Date.now());
   const answerLockRef = useRef(false);
@@ -75,9 +85,8 @@ export function DateOrDump() {
   }, []);
 
   const playSound = useCallback((sound: DateOrDumpSound) => {
-    if (!soundEnabled) return;
     getAudio().play(sound);
-  }, [getAudio, soundEnabled]);
+  }, [getAudio]);
 
   useEffect(() => {
     playSoundRef.current = playSound;
@@ -116,20 +125,7 @@ export function DateOrDump() {
       .filter((model) => model.runway_count >= 2);
   }, [models, playableLooks]);
 
-  const leaderboard = useMemo(
-    () => playableLooks
-      .filter((look) => look.date_count + look.dump_count > 0)
-      .slice()
-      .sort((a, b) => (
-        b.style_quotient_score - a.style_quotient_score
-        || (b.date_count + b.dump_count) - (a.date_count + a.dump_count)
-      ))
-      .slice(0, 5),
-    [playableLooks],
-  );
-
   const current = deck[index];
-  const progress = deck.length > 0 ? Math.round(((index + 1) / deck.length) * 100) : 0;
 
   const markLookImageBroken = useCallback((lookId: string) => {
     setBrokenLookIds((currentIds) => {
@@ -164,6 +160,7 @@ export function DateOrDump() {
       setTimedOutRoundId(null);
       setResult(null);
       setSelectedSide(null);
+      setRoseSide(null);
       setTimeLeft(ROUND_TIME_SECONDS);
       startedAtRef.current = Date.now();
       answerLockRef.current = false;
@@ -208,6 +205,7 @@ export function DateOrDump() {
       } else {
         setIndex((currentIndex) => currentIndex + 1);
         setSelectedSide(null);
+        setRoseSide(null);
         setTimedOutRoundId(null);
         setTimeLeft(ROUND_TIME_SECONDS);
         answerLockRef.current = false;
@@ -231,11 +229,12 @@ export function DateOrDump() {
     handleTimeoutRef.current = handleTimeout;
   }, [handleTimeout]);
 
-  const chooseSide = useCallback((side: DateOrDumpSide) => {
+  const chooseSide = useCallback((side: DateOrDumpSide, roseOverride?: DateOrDumpSide | null) => {
     if (!current || !sessionId || selectedSide || answerLockRef.current) return;
     answerLockRef.current = true;
     void getAudio().resume();
     playSound('tap');
+    const selectedRoseSide = roseOverride === undefined ? roseSide : roseOverride;
     const responseMs = Date.now() - startedAtRef.current;
     const winner = side === 'left' ? current.left : current.right;
     const loser = side === 'left' ? current.right : current.left;
@@ -245,11 +244,17 @@ export function DateOrDump() {
       winner,
       loser,
       responseMs,
+      roseSide: selectedRoseSide,
+      roseLook: selectedRoseSide === 'left' ? current.left : selectedRoseSide === 'right' ? current.right : null,
     };
     const nextAnswers = [...answers, answer];
 
     setSelectedSide(side);
     setAnswers(nextAnswers);
+    if (selectedRoseSide) {
+      setRoseSide(selectedRoseSide);
+      recordRosePreferenceLocal(anonymousPlayerId, current, selectedRoseSide);
+    }
     setLooks((currentLooks) => applyDuelToLooks(currentLooks, winner.id, loser.id));
     playSound('pick');
 
@@ -273,10 +278,17 @@ export function DateOrDump() {
     moveToNextRound,
     playSound,
     push,
+    roseSide,
     selectedSide,
     sessionId,
     timedOutCount,
   ]);
+
+  const chooseRose = useCallback((side: DateOrDumpSide) => {
+    if (!current || selectedSide || timedOutRoundId === current.client_id || answerLockRef.current) return;
+    setRoseSide(side);
+    chooseSide(side, side);
+  }, [chooseSide, current, selectedSide, timedOutRoundId]);
 
   useEffect(() => {
     if (phase !== 'playing' || !current || selectedSide || timedOutRoundId === current.client_id) return undefined;
@@ -309,64 +321,62 @@ export function DateOrDump() {
     setTimedOutRoundId(null);
     setResult(null);
     setSelectedSide(null);
+    setRoseSide(null);
     setTimeLeft(ROUND_TIME_SECONDS);
     answerLockRef.current = false;
   };
 
-  const toggleMusic = () => {
-    const audio = getAudio();
-    void audio.resume();
-    setMusicEnabled((enabled) => {
-      const next = !enabled;
-      if (next) audio.startMusic();
-      else audio.stopMusic();
-      return next;
-    });
-  };
-
-  const toggleSound = () => {
-    setSoundEnabled((enabled) => !enabled);
-  };
-
   useEffect(() => () => {
-    audioRef.current?.stopMusic();
+    audioRef.current?.close();
   }, []);
 
   const shareResult = async () => {
     if (!result) return;
-    const text = `My Date or Dump type: ${result.archetype || result.title}. ${result.summary} #DateOrDump #DFB`;
+    const card = DATE_OR_DUMP_RESULT_CARDS[pickDateOrDumpResultCard(result, answers)];
+    const text = buildDateOrDumpShareCaption(result, answers);
     try {
-      if (navigator.share) {
-        await navigator.share({ title: 'Date or Dump', text });
+      const file = await posterImageFile(card);
+      await navigator.clipboard.writeText(text).catch(() => undefined);
+      const gameUrl = `${window.location.origin}/game`;
+      if (file && navigator.canShare?.({ files: [file], text, url: gameUrl })) {
+        await navigator.share({
+          title: 'Date or Dump',
+          text,
+          url: gameUrl,
+          files: [file],
+        });
+      } else if (navigator.share) {
+        await navigator.share({
+          title: 'Date or Dump',
+          text,
+          url: gameUrl,
+        });
       } else {
-        await navigator.clipboard.writeText(text);
-        push('Date or Dump', 'Result copied.');
+        window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer');
       }
     } catch {
       await navigator.clipboard.writeText(text);
-      push('Date or Dump', 'Result copied.');
+      push('Date or Dump', 'Caption copied. Long-press the card to save/share it.');
     }
   };
 
   return (
-    <div className="min-h-[100dvh] overflow-hidden bg-black text-white">
-      <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(circle_at_20%_12%,rgba(255,0,128,0.42),transparent_28%),radial-gradient(circle_at_82%_18%,rgba(57,255,20,0.24),transparent_25%),linear-gradient(145deg,#050006_0%,#111_42%,#250018_100%)]" />
-      <div className="fixed inset-0 pointer-events-none opacity-35 bg-[linear-gradient(90deg,rgba(57,255,20,0.16)_1px,transparent_1px),linear-gradient(180deg,rgba(255,0,128,0.14)_1px,transparent_1px)] bg-[size:34px_34px]" />
-      <div className="fixed inset-x-0 bottom-0 pointer-events-none h-44 bg-[linear-gradient(0deg,rgba(57,255,20,0.2),transparent)]" />
-      <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-[520px] flex-col px-4 py-4 sm:py-6">
+    <div className="min-h-[100dvh] overflow-hidden bg-[#050005] text-white">
+      <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_18%,rgba(255,20,147,0.25),transparent_35%),radial-gradient(circle_at_50%_85%,rgba(255,20,147,0.18),transparent_45%),#050005]" />
+      <div className="fixed inset-0 pointer-events-none opacity-[0.07] bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.9)_1px,transparent_0)] bg-[size:18px_18px]" />
+      <motion.div
+        className="pointer-events-none fixed -left-1/2 top-0 h-full w-2/3 rotate-12 bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.18),transparent)] blur-2xl"
+        animate={{ x: ['-12%', '280%'], opacity: [0, 0.58, 0] }}
+        transition={{ duration: 7.5, repeat: Infinity, ease: 'easeInOut' }}
+      />
+      <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-[430px] flex-col overflow-hidden bg-[#050005] px-5 py-5">
         {phase === 'loading' && <LoadingScreen />}
         {phase === 'landing' && (
           <LandingScreen
             loadError={loadError}
-            models={playableModels}
-            looks={playableLooks}
             onStart={startGame}
             onRetry={loadData}
             starting={starting}
-            musicEnabled={musicEnabled}
-            soundEnabled={soundEnabled}
-            onToggleMusic={toggleMusic}
-            onToggleSound={toggleSound}
           />
         )}
         {phase === 'playing' && current && (
@@ -374,16 +384,15 @@ export function DateOrDump() {
             duel={current}
             currentRound={index + 1}
             totalRounds={deck.length}
-            progress={progress}
             selectedSide={selectedSide}
+            roseSide={roseSide}
             timedOut={timedOutRoundId === current.client_id}
             timeLeft={timeLeft}
-            musicEnabled={musicEnabled}
-            soundEnabled={soundEnabled}
             onChoose={chooseSide}
+            onRose={chooseRose}
+            onSkip={handleTimeout}
+            onBack={playAgain}
             onBrokenLook={markLookImageBroken}
-            onToggleMusic={toggleMusic}
-            onToggleSound={toggleSound}
           />
         )}
         {phase === 'result' && (
@@ -391,15 +400,8 @@ export function DateOrDump() {
             result={result}
             loading={resultLoading}
             answers={answers}
-            leaderboard={leaderboard}
             onPlayAgain={playAgain}
             onShare={shareResult}
-            onBrokenLook={markLookImageBroken}
-            timedOutCount={timedOutCount}
-            musicEnabled={musicEnabled}
-            soundEnabled={soundEnabled}
-            onToggleMusic={toggleMusic}
-            onToggleSound={toggleSound}
           />
         )}
       </div>
@@ -411,9 +413,10 @@ function LoadingScreen() {
   return (
     <div className="grid flex-1 place-items-center text-center">
       <div>
-        <Loader2 className="mx-auto mb-4 h-11 w-11 animate-spin text-[#80ffdb]" />
-        <div className="font-display text-4xl">Loading looks</div>
-        <p className="mt-2 text-sm text-white/70">Finding same-model fashion duels.</p>
+        <Loader2 className="mx-auto mb-4 h-11 w-11 animate-spin text-[#ff1493]" />
+        <div className="mx-auto max-w-xs text-2xl font-black leading-tight text-white">
+          Wait babe, we&apos;re finding your type...
+        </div>
       </div>
     </div>
   );
@@ -421,108 +424,52 @@ function LoadingScreen() {
 
 function LandingScreen({
   loadError,
-  models,
-  looks,
   starting,
   onStart,
   onRetry,
-  musicEnabled,
-  soundEnabled,
-  onToggleMusic,
-  onToggleSound,
 }: {
   loadError: string | null;
-  models: DateOrDumpModel[];
-  looks: DateOrDumpGameLook[];
   starting: boolean;
   onStart: () => void;
   onRetry: () => void;
-  musicEnabled: boolean;
-  soundEnabled: boolean;
-  onToggleMusic: () => void;
-  onToggleSound: () => void;
 }) {
-  const teaserScenarios = useMemo(() => GAME_SCENARIOS.slice(0, 5), []);
-
   return (
-    <div className="flex flex-1 flex-col">
-      <TopBrand />
-      <AudioControls
-        musicEnabled={musicEnabled}
-        soundEnabled={soundEnabled}
-        onToggleMusic={onToggleMusic}
-        onToggleSound={onToggleSound}
-      />
-
-      <main className="flex flex-1 flex-col justify-center py-7">
-        <motion.div
-          initial={{ opacity: 0, y: 18, scale: 0.98 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={{ type: 'spring', stiffness: 140, damping: 18 }}
-          className="rounded-[2rem] border border-[#39ff14]/35 bg-black/60 p-5 shadow-[0_0_55px_rgba(255,0,128,0.22),inset_0_0_30px_rgba(57,255,20,0.05)] backdrop-blur-2xl"
+    <div className="-mx-5 -my-5 relative flex min-h-[100dvh] flex-1 items-center justify-center overflow-hidden bg-black">
+      <div className="relative aspect-[941/1672] w-full max-w-[430px]">
+        <motion.img
+          src="/date-or-dump/home-date-or-dump.png"
+          alt="Date or Dump home screen"
+          className="absolute inset-0 h-full w-full object-contain"
+          initial={{ opacity: 0, scale: 1.015 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.36, ease: 'easeOut' }}
+        />
+        <motion.button
+          type="button"
+          onClick={loadError ? onRetry : onStart}
+          disabled={starting}
+          aria-label={loadError ? 'Retry Date or Dump' : 'Show me the boys'}
+          className="absolute bottom-[7.2%] left-[15%] right-[15%] flex h-[7.3%] items-center gap-2 rounded-full bg-[#ffd600] px-5 pr-3 text-[clamp(0.92rem,3.5vw,1.08rem)] font-black text-black shadow-[0_0_34px_rgba(255,20,147,0.45),0_9px_0_#c9a600] focus:outline-none focus:ring-4 focus:ring-[#ffd600]/70 disabled:cursor-wait"
+          whileTap={{ scale: 0.97, y: 3 }}
         >
-          <div className="inline-flex items-center gap-2 rounded-full bg-[#ff0080] px-3 py-1 text-xs font-black uppercase tracking-[0.18em] text-white shadow-[0_0_24px_rgba(255,0,128,0.7)]">
-            <Sparkles className="h-3.5 w-3.5" /> 10 Duels
+          <span className="min-w-0 flex-1 whitespace-nowrap text-center leading-none">
+            Show me the boys
+          </span>
+          <span className="grid aspect-square h-[70%] shrink-0 place-items-center rounded-full bg-black text-white">
+            <ChevronLeft className="h-[45%] w-[45%] rotate-180" />
+          </span>
+        </motion.button>
+        {starting && (
+          <div className="absolute bottom-[7.2%] left-[15%] right-[15%] grid h-[7.3%] place-items-center rounded-full bg-black/35">
+            <Loader2 className="h-7 w-7 animate-spin text-white" />
           </div>
-          <h1 className="mt-4 font-display text-6xl leading-[0.9] tracking-normal">
-            Date
-            <span className="block text-[#39ff14] drop-shadow-[0_0_18px_rgba(57,255,20,0.55)]">or Dump</span>
-          </h1>
-          <p className="mt-4 text-base font-medium text-white/82">
-            Two looks. Same man. Ten seconds. Pick the fit with better fashion chemistry before the timer blasts.
-          </p>
-
-          <div className="mt-5 grid grid-cols-3 gap-2">
-            <CandyStat label="Men" value={`${models.length}`} />
-            <CandyStat label="Looks" value={`${looks.length}`} />
-            <CandyStat label="Timer" value="10s" />
+        )}
+        {loadError && (
+          <div className="absolute left-[9%] right-[9%] top-[8%] rounded-2xl border border-[#ff1493]/70 bg-black/80 px-3 py-2 text-center text-xs font-bold leading-snug text-white shadow-[0_0_20px_rgba(255,20,147,0.35)]">
+            {loadError}
           </div>
-
-          {loadError ? (
-            <div className="mt-5 rounded-2xl border border-[#ff0080]/50 bg-[#ff0080]/15 p-4 text-sm text-pink-50">
-              <div className="font-bold">Setup needed</div>
-              <div className="mt-1 text-pink-50/80">{loadError}</div>
-              <button
-                onClick={onRetry}
-                className="mt-3 inline-flex items-center gap-2 rounded-full bg-[#39ff14] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-black"
-              >
-                <RotateCcw className="h-3.5 w-3.5" /> Retry
-              </button>
-            </div>
-          ) : models.length === 0 ? (
-            <div className="mt-5 rounded-2xl border border-[#39ff14]/25 bg-black/35 p-4 text-sm text-white/75">
-              Approve at least two Runway images for DFB for the same model, then this game can build a fair duel.
-            </div>
-          ) : (
-            <button
-              onClick={onStart}
-              disabled={starting}
-              className="mt-6 flex h-16 w-full items-center justify-center gap-3 rounded-[1.4rem] bg-[#39ff14] text-lg font-black uppercase tracking-[0.12em] text-black shadow-[0_12px_0_#129c00,0_0_38px_rgba(57,255,20,0.45)] transition active:translate-y-1 active:shadow-[0_7px_0_#129c00,0_0_22px_rgba(57,255,20,0.35)] disabled:opacity-60"
-            >
-              {starting ? <Loader2 className="h-5 w-5 animate-spin" /> : <Zap className="h-5 w-5 fill-current" />}
-              Start Game
-            </button>
-          )}
-        </motion.div>
-
-        <div className="mt-5 rounded-[1.5rem] border border-[#ff0080]/35 bg-black/45 p-4 shadow-[0_0_35px_rgba(255,0,128,0.16)] backdrop-blur-xl">
-          <div className="mb-3 flex items-center gap-2 text-xs font-black uppercase tracking-[0.18em] text-[#39ff14]">
-            <Hourglass className="h-4 w-4" /> Situation bank
-          </div>
-          <div className="space-y-2">
-            {teaserScenarios.map((scenario, index) => (
-              <motion.div
-                key={scenario}
-                className="rounded-2xl border border-white/10 bg-white/8 px-3 py-2 text-xs font-semibold text-white/78"
-                animate={{ x: index % 2 === 0 ? [0, 3, 0] : [0, -3, 0] }}
-                transition={{ duration: 3 + index * 0.35, repeat: Infinity, ease: 'easeInOut' }}
-              >
-                {scenario}
-              </motion.div>
-            ))}
-          </div>
-        </div>
-      </main>
+        )}
+      </div>
     </div>
   );
 }
@@ -531,217 +478,116 @@ function PlayingScreen({
   duel,
   currentRound,
   totalRounds,
-  progress,
   selectedSide,
+  roseSide,
   timedOut,
   timeLeft,
-  musicEnabled,
-  soundEnabled,
   onChoose,
+  onRose,
+  onSkip,
+  onBack,
   onBrokenLook,
-  onToggleMusic,
-  onToggleSound,
 }: {
   duel: DateOrDumpDuel;
   currentRound: number;
   totalRounds: number;
-  progress: number;
   selectedSide: DateOrDumpSide | null;
+  roseSide: DateOrDumpSide | null;
   timedOut: boolean;
   timeLeft: number;
-  musicEnabled: boolean;
-  soundEnabled: boolean;
   onChoose: (side: DateOrDumpSide) => void;
+  onRose: (side: DateOrDumpSide) => void;
+  onSkip: () => void;
+  onBack: () => void;
   onBrokenLook: (lookId: string) => void;
-  onToggleMusic: () => void;
-  onToggleSound: () => void;
 }) {
   return (
-    <div className="flex flex-1 flex-col">
-      <TopBrand compact />
-      <AudioControls
-        musicEnabled={musicEnabled}
-        soundEnabled={soundEnabled}
-        onToggleMusic={onToggleMusic}
-        onToggleSound={onToggleSound}
-      />
-
-      <div className="mt-2 rounded-[1.4rem] border border-[#39ff14]/25 bg-black/50 p-3 shadow-[0_0_28px_rgba(57,255,20,0.12)] backdrop-blur-xl">
-        <div className="flex items-center justify-between text-xs font-black uppercase tracking-[0.18em] text-white/70">
-          <span>Round {currentRound}/{totalRounds}</span>
-          <span className="text-[#39ff14]">{progress}%</span>
+    <div className="relative flex flex-1 flex-col gap-4 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-[max(0.25rem,env(safe-area-inset-top))]">
+      <GameTopBar onBack={onBack} />
+      <header className="relative text-center">
+        <div className="pointer-events-none absolute left-10 top-5 text-[#ff1493] drop-shadow-[0_0_14px_rgba(255,20,147,0.9)]">
+          <Gem className="h-4 w-4 fill-current" />
         </div>
-        <div className="mt-2 flex gap-1.5">
-          {Array.from({ length: totalRounds }).map((_, i) => (
-            <div
-              key={i}
-              className={`h-2 flex-1 rounded-full ${i < currentRound ? 'bg-[#39ff14] shadow-[0_0_10px_rgba(57,255,20,0.75)]' : 'bg-white/18'}`}
-            />
-          ))}
+        <div className="pointer-events-none absolute right-9 top-2 text-[#ff1493] drop-shadow-[0_0_14px_rgba(255,20,147,0.9)]">
+          <Gem className="h-5 w-5 fill-current" />
         </div>
-        <TimerBomb timeLeft={timeLeft} />
-      </div>
+        <h1 className="dfb-condensed text-[clamp(4.1rem,15.3vw,5.4rem)] uppercase italic leading-[0.76] tracking-[-0.045em]">
+          <span className="text-white">Fit </span>
+          <span className="text-[#ff1493]">Duel</span>
+        </h1>
+        <div className="dfb-condensed -mt-1 flex items-center justify-center gap-2.5 text-[1.3rem] uppercase tracking-wide text-white/90">
+          <span className="h-0.5 w-12 bg-[#ff1493]" />
+          Round <span className="text-[#ff1493]">{currentRound}</span> of {totalRounds}
+          <span className="h-0.5 w-12 bg-[#ff1493]" />
+        </div>
+      </header>
 
-      <motion.div
-        key={duel.client_id}
-        initial={{ opacity: 0, y: 18 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ type: 'spring', stiffness: 140, damping: 18 }}
-        className="mt-4 text-center"
-      >
-        <div className="text-xs font-black uppercase tracking-[0.2em] text-[#39ff14]">{duel.model_name}</div>
-        <div className="mt-1 text-sm font-semibold text-white/82">{duel.scenario}</div>
-      </motion.div>
+      <ScenarioBox scenario={duel.scenario} timeLeft={timeLeft} />
 
-      <div className="relative mt-5 grid flex-1 grid-cols-2 gap-3 pb-4">
+      <div className="relative grid min-h-[360px] flex-1 grid-cols-2 gap-5">
         <ChoiceCard
           side="left"
           look={duel.left}
           selectedSide={selectedSide}
+          roseSide={roseSide}
           timedOut={timedOut}
           onChoose={onChoose}
+          onRose={onRose}
           onBroken={() => onBrokenLook(duel.left.id)}
         />
         <ChoiceCard
           side="right"
           look={duel.right}
           selectedSide={selectedSide}
+          roseSide={roseSide}
           timedOut={timedOut}
           onChoose={onChoose}
+          onRose={onRose}
           onBroken={() => onBrokenLook(duel.right.id)}
         />
+        <div className="pointer-events-none absolute left-1/2 top-1/2 z-30 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-[#ff1493] bg-black text-center shadow-[0_0_20px_rgba(255,20,147,0.72)]">
+          <span className="flex h-full w-full items-center justify-center text-[1.12rem] font-black italic leading-none tracking-[-0.03em] text-white">
+            VS
+          </span>
+        </div>
+      </div>
 
-        <motion.div
-          className="pointer-events-none absolute left-1/2 top-1/2 z-20 grid h-16 w-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border-4 border-white bg-[#ff0080] font-display text-2xl shadow-[0_0_36px_rgba(255,0,128,0.8)]"
-          animate={{ rotate: selectedSide ? 360 : [0, -8, 8, 0], scale: selectedSide ? 1.18 : 1 }}
-          transition={{ duration: selectedSide ? 0.55 : 2, repeat: selectedSide ? 0 : Infinity }}
+      <div className="flex flex-col items-center gap-3">
+        <div className="dfb-condensed rounded-full border-2 border-[#ffd600] px-10 py-2 text-2xl uppercase italic tracking-wide text-[#ffd600]">
+          Choose Your Fit
+        </div>
+        <button
+          type="button"
+          onClick={onSkip}
+          disabled={Boolean(selectedSide) || timedOut}
+          className="dfb-condensed text-xl uppercase text-white/60 underline decoration-white/35 underline-offset-4 transition hover:text-white disabled:opacity-40"
         >
-          VS
-        </motion.div>
-        <AnimatePresence>
-          {timedOut && (
-            <motion.div
-              className="absolute inset-0 z-30 grid place-items-center rounded-[1.6rem] bg-black/60 text-center backdrop-blur-sm"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            >
-              <div className="rounded-[1.5rem] border border-[#ff0080]/60 bg-black px-5 py-4 shadow-[0_0_35px_rgba(255,0,128,0.45)]">
-                <div className="font-display text-4xl text-[#ff0080]">Time out</div>
-                <div className="mt-1 text-xs font-black uppercase tracking-[0.18em] text-[#39ff14]">
-                  Bomb phat gaya
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      <div className="pb-2 text-center text-xs font-semibold text-white/65">
-        Tap the look with better fashion chemistry
-      </div>
-    </div>
-  );
-}
-
-function TimerBomb({ timeLeft }: { timeLeft: number }) {
-  const danger = timeLeft <= 3;
-  const width = `${Math.max(0, Math.min(100, (timeLeft / ROUND_TIME_SECONDS) * 100))}%`;
-
-  return (
-    <div className="mt-3 rounded-2xl border border-white/10 bg-black/50 p-2">
-      <div className="mb-2 flex items-center justify-between">
-        <div className={`flex items-center gap-2 text-xs font-black uppercase tracking-[0.18em] ${danger ? 'text-[#ff0080]' : 'text-[#39ff14]'}`}>
-          <motion.span
-            animate={danger ? { scale: [1, 1.18, 1], rotate: [-6, 6, -6] } : { scale: 1 }}
-            transition={{ duration: 0.45, repeat: danger ? Infinity : 0 }}
-            className="grid h-7 w-7 place-items-center rounded-full bg-black"
-          >
-            <Hourglass className="h-4 w-4" />
-          </motion.span>
-          Timer bomb
-        </div>
-        <div className={`font-display text-2xl leading-none ${danger ? 'text-[#ff0080]' : 'text-white'}`}>
-          {timeLeft}s
-        </div>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-white/12">
-        <motion.div
-          className={`h-full rounded-full ${danger ? 'bg-[#ff0080] shadow-[0_0_16px_rgba(255,0,128,0.8)]' : 'bg-[#39ff14] shadow-[0_0_16px_rgba(57,255,20,0.7)]'}`}
-          animate={{ width }}
-          transition={{ duration: 0.18 }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function ChoiceCard({
-  side,
-  look,
-  selectedSide,
-  timedOut,
-  onChoose,
-  onBroken,
-}: {
-  side: DateOrDumpSide;
-  look: DateOrDumpGameLook;
-  selectedSide: DateOrDumpSide | null;
-  timedOut: boolean;
-  onChoose: (side: DateOrDumpSide) => void;
-  onBroken: () => void;
-}) {
-  const selected = selectedSide === side;
-  const rejected = Boolean((selectedSide && selectedSide !== side) || timedOut);
-
-  return (
-    <motion.button
-      type="button"
-      onClick={() => onChoose(side)}
-      disabled={Boolean(selectedSide) || timedOut}
-      className="relative min-h-[58dvh] overflow-hidden rounded-[1.6rem] border border-[#ff0080]/35 bg-black/55 text-left shadow-[0_0_42px_rgba(255,0,128,0.18),0_24px_70px_rgba(0,0,0,0.45)] backdrop-blur-xl"
-      animate={{
-        scale: selected ? 1.07 : rejected ? 0.88 : 1,
-        opacity: rejected ? 0.42 : 1,
-        rotate: selected ? (side === 'left' ? -1.5 : 1.5) : 0,
-        y: selected ? -12 : rejected ? 18 : 0,
-      }}
-      transition={{ type: 'spring', stiffness: 240, damping: 20 }}
-      whileTap={!selectedSide ? { scale: 0.96 } : undefined}
-    >
-      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(57,255,20,0.13),rgba(255,255,255,0)_35%,rgba(0,0,0,0.58))]" />
-      <SmartFullBodyImage
-        src={look.image_url}
-        alt={`${look.model_name} ${side} look`}
-        onBroken={onBroken}
-      />
-      <div className="absolute inset-x-0 bottom-0 z-10 p-3">
-        <div className="rounded-2xl border border-white/10 bg-black/54 p-3 backdrop-blur-md">
-          <div className="truncate text-xs font-black uppercase tracking-[0.18em] text-white/70">{side} look</div>
-          <div className="mt-1 truncate text-sm font-bold">{lookTitleFromItems(look)}</div>
-          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/20">
-            <div className="h-full rounded-full bg-[#39ff14] shadow-[0_0_10px_rgba(57,255,20,0.8)]" style={{ width: `${look.style_quotient_score}%` }} />
-          </div>
-        </div>
+          Skip This Round
+        </button>
+        <ProgressBars currentRound={currentRound} totalRounds={totalRounds} />
       </div>
 
       <AnimatePresence>
-        {selected && (
-          <>
+        {timedOut && (
+          <motion.div
+            className="pointer-events-none absolute inset-0 z-[70] grid place-items-center"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
             <motion.div
-              initial={{ scale: 0, opacity: 0, rotate: -12 }}
-              animate={{ scale: 1, opacity: 1, rotate: 0 }}
-              exit={{ scale: 0, opacity: 0 }}
-              className="absolute right-3 top-3 z-30 flex items-center gap-1.5 rounded-full bg-[#39ff14] px-3 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-black shadow-[0_0_35px_rgba(57,255,20,0.62)]"
+              className="whitespace-nowrap rounded-full border-2 border-white bg-[#ff1493] px-6 py-3 text-2xl font-black uppercase text-black shadow-[0_0_34px_rgba(255,20,147,0.9),0_10px_0_rgba(0,0,0,0.58)]"
+              initial={{ scale: 0.72, rotate: -4 }}
+              animate={{ scale: 1, rotate: 0 }}
+              exit={{ scale: 0.9 }}
+              transition={{ type: 'spring', stiffness: 320, damping: 18 }}
             >
-              <Heart className="h-3.5 w-3.5 fill-current" />
-              Picked
+              Overthinking Alert!
             </motion.div>
-            <SparkleBurst />
-          </>
+          </motion.div>
         )}
       </AnimatePresence>
-    </motion.button>
+    </div>
   );
 }
 
@@ -749,242 +595,224 @@ function ResultScreen({
   result,
   loading,
   answers,
-  leaderboard,
   onPlayAgain,
   onShare,
-  onBrokenLook,
-  timedOutCount,
-  musicEnabled,
-  soundEnabled,
-  onToggleMusic,
-  onToggleSound,
 }: {
   result: DateOrDumpResult | null;
   loading: boolean;
   answers: DateOrDumpAnswer[];
-  leaderboard: DateOrDumpGameLook[];
   onPlayAgain: () => void;
   onShare: () => void;
-  onBrokenLook: (lookId: string) => void;
-  timedOutCount: number;
-  musicEnabled: boolean;
-  soundEnabled: boolean;
-  onToggleMusic: () => void;
-  onToggleSound: () => void;
 }) {
-  const avgMs = answers.length
-    ? Math.round(answers.reduce((sum, answer) => sum + answer.responseMs, 0) / answers.length)
-    : 0;
-  const shareCard = result ? buildInstagramShareCard(result, answers, avgMs) : null;
-
   if (loading || !result) {
     return (
       <div className="grid flex-1 place-items-center text-center">
-        <div className="rounded-[2rem] border border-white/20 bg-white/14 p-8 backdrop-blur-2xl">
-          <Loader2 className="mx-auto mb-4 h-11 w-11 animate-spin text-[#80ffdb]" />
-          <div className="font-display text-4xl">Reading your taste</div>
-          <p className="mt-2 text-sm text-white/70">Turning your picks into a crush report.</p>
+        <div>
+          <Loader2 className="mx-auto mb-4 h-11 w-11 animate-spin text-[#ff1493]" />
+          <div className="mx-auto max-w-xs text-2xl font-black leading-tight text-white">
+            Wait babe, we&apos;re finding your type...
+          </div>
         </div>
       </div>
     );
   }
 
+  const card = DATE_OR_DUMP_RESULT_CARDS[pickDateOrDumpResultCard(result, answers)];
+
   return (
-    <div className="flex flex-1 flex-col py-2">
-      <TopBrand compact />
-      <AudioControls
-        musicEnabled={musicEnabled}
-        soundEnabled={soundEnabled}
-        onToggleMusic={onToggleMusic}
-        onToggleSound={onToggleSound}
-      />
-
-      <motion.div
-        initial={{ opacity: 0, scale: 0.92, y: 18 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        transition={{ type: 'spring', stiffness: 150, damping: 18 }}
-        className="mt-4 overflow-hidden rounded-[2rem] border border-white/20 bg-white/12 p-3 shadow-[0_24px_80px_rgba(0,0,0,0.35)] backdrop-blur-2xl"
-      >
-        <InstagramResultCard
-          result={result}
-          answers={answers}
-          avgMs={avgMs}
-          shareCard={shareCard}
-          timedOutCount={timedOutCount}
+    <div className="-mx-5 -my-5 relative flex min-h-[100dvh] flex-1 items-center justify-center overflow-hidden bg-black">
+      <div className="relative aspect-[941/1672] w-full max-w-[430px]">
+        <motion.img
+          src={card.src}
+          alt={card.alt}
+          className="absolute inset-0 h-full w-full object-contain"
+          initial={{ opacity: 0, scale: 1.015 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.42, ease: 'easeOut' }}
         />
-
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <button
-            onClick={onPlayAgain}
-            className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-white/16 px-4 py-3 text-sm font-black uppercase tracking-[0.12em] text-white ring-1 ring-white/20"
-          >
-            <RotateCcw className="h-4 w-4" /> Again
-          </button>
-          <button
-            onClick={onShare}
-            className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#80ffdb] px-4 py-3 text-sm font-black uppercase tracking-[0.12em] text-[#24051f] shadow-[0_5px_0_#1cb995]"
-          >
-            <Share2 className="h-4 w-4" /> Share to Instagram
-          </button>
-        </div>
-      </motion.div>
-
-      <div className="mt-5 rounded-[1.5rem] border border-white/15 bg-black/20 p-4 backdrop-blur-xl">
-        <div className="mb-3 flex items-center gap-2 text-xs font-black uppercase tracking-[0.18em] text-[#ffd166]">
-          <Star className="h-4 w-4 fill-current" /> Your winning picks
-        </div>
-        <div className="grid grid-cols-5 gap-2">
-          {answers.map((answer) => (
-            <div key={answer.duel.client_id} className="overflow-hidden rounded-xl bg-white/10">
-              <PreviewImage
-                src={answer.winner.image_url}
-                alt={answer.winner.theme}
-                className="aspect-[3/4] h-full w-full bg-white object-contain"
-                onBroken={() => onBrokenLook(answer.winner.id)}
-              />
-            </div>
-          ))}
-        </div>
+        <motion.div
+          className="pointer-events-none absolute inset-0 bg-[linear-gradient(115deg,transparent_0%,rgba(255,255,255,0.22)_44%,transparent_58%)]"
+          initial={{ x: '-130%' }}
+          animate={{ x: '130%' }}
+          transition={{ duration: 0.85, delay: 0.18, ease: 'easeInOut' }}
+        />
+        <button
+          type="button"
+          onClick={onShare}
+          aria-label="Share Date or Dump result"
+          className="absolute bottom-[8.8%] left-[13.5%] right-[13.5%] h-[6.8%] rounded-full focus:outline-none focus:ring-4 focus:ring-[#ffd600]/70"
+        />
+        <button
+          type="button"
+          onClick={onPlayAgain}
+          className="absolute bottom-[4.1%] left-1/2 -translate-x-1/2 rounded-full bg-black/55 px-5 py-1.5 text-sm font-black text-white/85 shadow-[0_0_18px_rgba(255,20,147,0.35)] backdrop-blur transition hover:text-white"
+        >
+          Play Again
+        </button>
       </div>
-
-      {leaderboard.length > 0 && (
-        <div className="mt-4 rounded-[1.5rem] border border-white/15 bg-black/20 p-4 backdrop-blur-xl">
-          <div className="mb-3 flex items-center gap-2 text-xs font-black uppercase tracking-[0.18em] text-[#39ff14]">
-            <Trophy className="h-4 w-4" /> Live leaderboard
-          </div>
-          <div className="space-y-2">
-            {leaderboard.slice(0, 4).map((look, rank) => (
-              <LeaderboardMini key={look.id} look={look} rank={rank + 1} />
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-function TopBrand({ compact = false }: { compact?: boolean }) {
+function GameTopBar({ onBack }: { onBack: () => void }) {
   return (
-    <header className={`flex items-center justify-between ${compact ? 'py-1' : 'py-2'}`}>
-      <div>
-        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#39ff14]/80">Fashion Lab Game</div>
-        <div className="font-display text-2xl leading-none">Date or Dump</div>
+    <header className="flex items-center justify-between gap-3">
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onBack}
+          aria-label="Back to game home"
+          className="grid h-11 w-11 place-items-center rounded-full border border-[#ff1493] bg-black text-white shadow-[0_0_18px_rgba(255,20,147,0.4)]"
+        >
+          <ChevronLeft className="h-5 w-5" />
+        </button>
+        <div className="dfb-condensed text-5xl uppercase italic leading-none tracking-[-0.04em] text-[#ff1493]">
+          DFB
+        </div>
       </div>
-      <div className="grid h-9 w-9 place-items-center rounded-full border border-[#39ff14]/50 bg-black text-[#ff0080] shadow-[0_0_22px_rgba(255,0,128,0.45)]">
-        <Heart className="h-4 w-4 fill-current" />
+      <div className="flex items-center gap-1.5">
+        <div className="flex h-7 items-center gap-1 rounded-full border border-[#ff1493] bg-black px-2.5 text-[11px] font-black text-white shadow-[0_0_12px_rgba(255,20,147,0.3)]">
+          <Gem className="h-3.5 w-3.5 fill-[#ff1493] text-[#ff1493]" />
+          2,450
+          <span className="ml-0.5 grid h-4 w-4 place-items-center rounded-full border border-[#ff1493]">
+            <Plus className="h-2.5 w-2.5" />
+          </span>
+        </div>
+        <div className="flex h-7 items-center gap-1 rounded-full bg-[#ffd600] px-2.5 text-[10px] font-black uppercase text-black shadow-[0_0_14px_rgba(255,214,0,0.24)]">
+          <Zap className="h-3.5 w-3.5 fill-current" />
+          5 Day Streak
+        </div>
       </div>
     </header>
   );
 }
 
-function AudioControls({
-  musicEnabled,
-  soundEnabled,
-  onToggleMusic,
-  onToggleSound,
-}: {
-  musicEnabled: boolean;
-  soundEnabled: boolean;
-  onToggleMusic: () => void;
-  onToggleSound: () => void;
-}) {
+function ScenarioBox({ scenario, timeLeft }: { scenario: string; timeLeft: number }) {
+  const urgent = timeLeft <= 3;
   return (
-    <div className="mt-3 flex justify-end gap-2">
-      <button
-        type="button"
-        onClick={onToggleMusic}
-        className={`grid h-9 w-9 place-items-center rounded-full border text-xs transition ${
-          musicEnabled
-            ? 'border-[#39ff14] bg-[#39ff14] text-black shadow-[0_0_18px_rgba(57,255,20,0.55)]'
-            : 'border-white/15 bg-black/35 text-white/70'
-        }`}
-        title={musicEnabled ? 'Music on' : 'Music off'}
-      >
-        <Music className="h-4 w-4" />
-      </button>
-      <button
-        type="button"
-        onClick={onToggleSound}
-        className={`grid h-9 w-9 place-items-center rounded-full border text-xs transition ${
-          soundEnabled
-            ? 'border-[#ff0080] bg-[#ff0080] text-white shadow-[0_0_18px_rgba(255,0,128,0.55)]'
-            : 'border-white/15 bg-black/35 text-white/70'
-        }`}
-        title={soundEnabled ? 'Sound effects on' : 'Sound effects off'}
-      >
-        {soundEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
-      </button>
-    </div>
-  );
-}
-
-function CandyStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-[#39ff14]/20 bg-black/45 p-3 text-center shadow-[inset_0_0_20px_rgba(57,255,20,0.05)]">
-      <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/55">{label}</div>
-      <div className="mt-1 font-display text-2xl leading-none text-[#39ff14]">{value}</div>
-    </div>
-  );
-}
-
-function LeaderboardMini({ look, rank }: { look: DateOrDumpGameLook; rank: number }) {
-  return (
-    <div className="flex items-center gap-3 rounded-2xl bg-white/10 p-2">
-      <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#39ff14] text-sm font-black text-black">
-        {rank}
+    <section className="relative rounded-[24px] border-2 border-[#ff1493] bg-black/90 px-4 pb-5 pt-5 text-center shadow-[0_0_24px_rgba(255,20,147,0.42)]">
+      <div className="mb-2 text-[11px] font-black uppercase tracking-[0.22em] text-[#ff1493]">
+        Scenario
       </div>
-      <PreviewImage
-        src={look.image_url}
-        alt={look.theme}
-        className="h-12 w-10 shrink-0 rounded-xl object-cover"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-bold">{look.model_name}</div>
-        <div className="truncate text-[11px] text-white/55">{lookTitleFromItems(look)}</div>
-      </div>
-      <div className="text-right font-display text-xl">{look.style_quotient_score}%</div>
-    </div>
+      <p className="text-[clamp(0.98rem,3.7vw,1.24rem)] font-semibold leading-snug text-white">
+        {scenario}
+      </p>
+      <motion.div
+        className="absolute -right-2.5 -top-7 z-10 grid h-[5.5rem] w-[5.5rem] place-items-center"
+        animate={urgent ? { scale: [1, 1.08, 1], rotate: [-3, 3, -3] } : { scale: [1, 1.02, 1] }}
+        transition={{ duration: urgent ? 0.45 : 1.8, repeat: Infinity, ease: 'easeInOut' }}
+      >
+        <Heart className="absolute inset-0 h-full w-full fill-black text-[#ff1493] drop-shadow-[0_0_24px_rgba(255,20,147,0.78)]" strokeWidth={2.2} />
+        <div className="relative z-10 text-center">
+          <div className="dfb-condensed text-[1.7rem] italic leading-none text-white">{timeLeft}s</div>
+          <div className="dfb-condensed text-[0.82rem] uppercase italic leading-none text-[#ff1493]">Left</div>
+        </div>
+      </motion.div>
+    </section>
   );
 }
 
-function PreviewImage({
-  src,
-  alt,
-  className,
+function ChoiceCard({
+  side,
+  look,
+  selectedSide,
+  roseSide,
+  timedOut,
+  onChoose,
+  onRose,
   onBroken,
 }: {
-  src: string;
-  alt: string;
-  className: string;
-  onBroken?: () => void;
+  side: DateOrDumpSide;
+  look: DateOrDumpGameLook;
+  selectedSide: DateOrDumpSide | null;
+  roseSide: DateOrDumpSide | null;
+  timedOut: boolean;
+  onChoose: (side: DateOrDumpSide) => void;
+  onRose: (side: DateOrDumpSide) => void;
+  onBroken: () => void;
 }) {
-  const [broken, setBroken] = useState(false);
+  const picked = selectedSide === side;
+  const rejected = selectedSide !== null && selectedSide !== side;
+  const rosePicked = roseSide === side;
+  const sideClass = side === 'left'
+    ? 'border-[#ff1493] shadow-[0_0_24px_rgba(255,20,147,0.45)]'
+    : 'border-[#8a2cff] shadow-[0_0_24px_rgba(138,44,255,0.45)]';
+  const roseClass = side === 'left'
+    ? 'border-[#ff1493] bg-black/88 shadow-[0_0_22px_rgba(255,20,147,0.55)]'
+    : 'border-[#8a2cff] bg-black/88 shadow-[0_0_22px_rgba(138,44,255,0.55)]';
 
-  useEffect(() => {
-    setBroken(false);
-  }, [src]);
-
-  if (!src || broken) {
-    return (
-      <div className={`${className} grid place-items-center bg-white/10 text-white/50`}>
-        <Activity className="h-5 w-5" />
-      </div>
-    );
-  }
+  const chooseFromKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    if (selectedSide || timedOut) return;
+    onChoose(side);
+  };
 
   return (
-    <img
-      src={src}
-      alt={alt}
-      referrerPolicy="no-referrer"
-      loading="lazy"
-      decoding="async"
-      onError={() => {
-        setBroken(true);
-        onBroken?.();
+    <motion.div
+      role="button"
+      tabIndex={selectedSide !== null || timedOut ? -1 : 0}
+      aria-disabled={selectedSide !== null || timedOut}
+      onClick={() => {
+        if (selectedSide || timedOut) return;
+        onChoose(side);
       }}
-      className={className}
-    />
+      onKeyDown={chooseFromKeyboard}
+      className={`relative min-h-[360px] overflow-hidden rounded-[30px] border-[3px] bg-[#f7f2f5] transition-[filter] duration-500 ${sideClass} ${rejected || timedOut ? 'grayscale' : ''}`}
+      whileTap={{ scale: 0.97 }}
+      animate={{
+        scale: picked ? 1.045 : rejected || timedOut ? 0.96 : 1,
+        opacity: rejected || timedOut ? 0.56 : 1,
+        y: picked ? -8 : 0,
+      }}
+      transition={{ type: 'spring', stiffness: 260, damping: 22 }}
+    >
+      <SmartFullBodyImage
+        src={look.image_url}
+        alt={look.theme || look.model_name}
+        onBroken={onBroken}
+      />
+      <div className="pointer-events-none absolute inset-x-6 bottom-6 h-10 rounded-[50%] bg-black/10 blur-lg" />
+      <button
+        type="button"
+        aria-pressed={rosePicked}
+        aria-label={`Mark ${side} look as rose preference`}
+        disabled={selectedSide !== null || timedOut}
+        onClick={(event) => {
+          event.stopPropagation();
+          onRose(side);
+        }}
+        className={`absolute bottom-4 ${side === 'left' ? 'left-4' : 'right-4'} z-20 grid h-14 w-14 place-items-center rounded-full border-2 text-[1.85rem] transition disabled:cursor-not-allowed disabled:opacity-70 ${roseClass} ${rosePicked ? 'scale-110 ring-4 ring-white/85' : ''}`}
+      >
+        <span className="drop-shadow-[0_0_10px_rgba(255,20,147,0.85)]">🌹</span>
+      </button>
+      <AnimatePresence>{picked && (rosePicked ? <RoseBurst /> : <HeartBurst />)}</AnimatePresence>
+    </motion.div>
+  );
+}
+
+function ProgressBars({
+  currentRound,
+  totalRounds,
+}: {
+  currentRound: number;
+  totalRounds: number;
+}) {
+  return (
+    <div className="flex w-full max-w-[270px] items-center justify-center gap-2 pt-1">
+      {Array.from({ length: totalRounds }).map((_, index) => {
+        const active = index < currentRound;
+        const current = index === currentRound - 1;
+        return (
+          <span
+            key={index}
+            className={`h-3 flex-1 rounded-full transition-all ${
+              active ? 'bg-[#ff1493]' : 'bg-white/15'
+            } ${current ? 'ring-2 ring-[#ff1493] ring-offset-2 ring-offset-[#050005]' : ''}`}
+          />
+        );
+      })}
+    </div>
   );
 }
 
@@ -998,235 +826,68 @@ function SmartFullBodyImage({
   onBroken?: () => void;
 }) {
   const [broken, setBroken] = useState(false);
-  const [fitMode, setFitMode] = useState<'portrait' | 'wide'>('portrait');
 
   useEffect(() => {
     setBroken(false);
-    setFitMode('portrait');
   }, [src]);
 
   if (!src || broken) {
     return (
-      <div className="absolute inset-x-3 top-4 bottom-24 grid place-items-center rounded-[1.25rem] bg-white/10 text-white/50">
-        <Activity className="h-5 w-5" />
+      <div className="absolute inset-0 grid place-items-center bg-white text-black/40">
+        <Activity className="h-6 w-6" />
       </div>
     );
   }
 
   return (
-    <div className="absolute inset-x-3 top-4 bottom-24 overflow-hidden rounded-[1.25rem] border border-white/70 bg-[radial-gradient(circle_at_50%_12%,#ffffff_0%,#ffffff_58%,#f2eef2_100%)] shadow-[inset_0_-28px_55px_rgba(255,45,114,0.08)]">
+    <div className="absolute inset-0 overflow-hidden bg-[#f8f7f8]">
       <img
         src={src}
         alt={alt}
         referrerPolicy="no-referrer"
         loading="eager"
         decoding="async"
-        onLoad={(event) => {
-          const image = event.currentTarget;
-          const ratio = image.naturalWidth / Math.max(image.naturalHeight, 1);
-          setFitMode(ratio > 0.82 ? 'wide' : 'portrait');
-        }}
         onError={() => {
           setBroken(true);
           onBroken?.();
         }}
-        className={`h-full w-full ${fitMode === 'wide' ? 'object-cover' : 'object-contain p-1.5'} object-center`}
+        className="relative z-10 h-full w-full object-contain object-center"
       />
-      <div className="pointer-events-none absolute inset-x-5 bottom-3 h-4 rounded-full bg-[#35142f]/10 blur-sm" />
     </div>
   );
 }
 
-function InstagramResultCard({
-  result,
-  answers,
-  avgMs,
-  shareCard,
-  timedOutCount,
-}: {
-  result: DateOrDumpResult;
-  answers: DateOrDumpAnswer[];
-  avgMs: number;
-  shareCard: ReturnType<typeof buildInstagramShareCard> | null;
-  timedOutCount: number;
-}) {
-  const winners = answers.slice(0, 3).map((answer) => answer.winner);
-  const handle = shareCard?.handle ?? '@dfb.dateordump';
-  const verdict = shareCard?.verdict ?? (result.archetype || result.title);
-
+function HeartBurst() {
+  const colors = ['#ff1493', '#ffffff', '#050005', '#ff5bb3', '#f7f2f5'];
   return (
-    <div className="relative aspect-[4/5] overflow-hidden rounded-[1.65rem] bg-black text-white shadow-[inset_0_0_0_1px_rgba(57,255,20,0.22)]">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_10%,rgba(57,255,20,0.65),transparent_28%),radial-gradient(circle_at_88%_18%,rgba(255,0,128,0.55),transparent_24%),linear-gradient(145deg,#080008_0%,#161616_48%,#280019_100%)]" />
-      <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between border-b border-[#39ff14]/20 bg-black/62 px-4 py-3 backdrop-blur-xl">
-        <div className="flex items-center gap-2">
-          <div className="grid h-9 w-9 place-items-center rounded-full bg-[linear-gradient(145deg,#ff2d72,#ffd166)] text-xs font-black text-white">
-            DFB
-          </div>
-          <div>
-            <div className="text-sm font-black leading-none text-white">{handle}</div>
-            <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#39ff14]">Taste drop</div>
-          </div>
-        </div>
-        <div className="flex gap-1">
-          <span className="h-1.5 w-1.5 rounded-full bg-black/35" />
-          <span className="h-1.5 w-1.5 rounded-full bg-black/35" />
-          <span className="h-1.5 w-1.5 rounded-full bg-black/35" />
-        </div>
-      </div>
-
-      <div className="relative z-10 flex h-full flex-col px-4 pb-4 pt-16">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#ff2d72]">My Date or Dump type</div>
-            <h1 className="mt-1 font-display text-4xl leading-[0.88] text-white drop-shadow-[0_0_18px_rgba(255,0,128,0.45)]">{verdict}</h1>
-          </div>
-          <MiniBobbleHead archetype={result.archetype || result.title} />
-        </div>
-
-        <p className="mt-3 rounded-2xl border border-[#39ff14]/20 bg-black/55 p-3 text-sm font-bold leading-snug text-white shadow-[0_0_26px_rgba(57,255,20,0.12)]">
-          {shareCard?.caption ?? result.summary}
-        </p>
-
-        <div className="mt-3 grid flex-1 grid-cols-3 gap-2">
-          {winners.map((look, index) => (
-            <div key={look.id} className="relative overflow-hidden rounded-2xl border border-[#ff0080]/25 bg-white shadow-[0_0_18px_rgba(255,0,128,0.18)]">
-              <PreviewImage
-                src={look.image_url}
-                alt={look.theme || look.model_name}
-                className="h-full w-full object-contain"
-              />
-              <div className="absolute left-1.5 top-1.5 rounded-full bg-[#ff2d72] px-2 py-0.5 text-[10px] font-black text-white">
-                #{index + 1}
-              </div>
-            </div>
-          ))}
-          {winners.length === 0 && (
-            <div className="col-span-3 grid h-full place-items-center rounded-2xl bg-white/70 text-sm font-black text-black/45">
-              Picks loading
-            </div>
-          )}
-        </div>
-
-        <div className="mt-3 grid grid-cols-3 gap-2">
-          <InstaMetric label="Picked" value={`${answers.length}`} />
-          <InstaMetric label="Speed" value={`${(avgMs / 1000).toFixed(1)}s`} />
-          <InstaMetric label="Bombs" value={`${timedOutCount}`} />
-        </div>
-
-        <div className="mt-3 rounded-2xl bg-[#39ff14] px-3 py-2 text-center text-xs font-black uppercase tracking-[0.12em] text-black shadow-[0_0_22px_rgba(57,255,20,0.45)]">
-          Final verdict: {shareCard?.slangLine ?? verdict}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function InstaMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/10 px-2 py-2 text-center shadow-sm">
-      <div className="text-[9px] font-black uppercase tracking-[0.12em] text-white/45">{label}</div>
-      <div className="mt-0.5 truncate text-sm font-black text-[#39ff14]">{value}</div>
-    </div>
-  );
-}
-
-function MiniBobbleHead({ archetype }: { archetype: string }) {
-  const spark = /spark|instant|street/i.test(archetype);
-  const calm = /soft|quiet|slow/i.test(archetype);
-  return (
-    <motion.div
-      className="relative shrink-0"
-      animate={{ rotate: [-4, 4, -3, 3, -4], y: [-2, 2, -1, 1, -2] }}
-      transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
-    >
-      <div className="relative grid h-20 w-20 place-items-center rounded-full border-[3px] border-[#35142f] bg-[#ffd166] shadow-[0_7px_0_#35142f,0_14px_30px_rgba(0,0,0,0.22)]">
-        <div className="absolute -top-2 left-5 h-6 w-10 rounded-t-full bg-[#35142f]" />
-        <div className="absolute top-7 flex gap-4">
-          <span className={`block h-2.5 w-2.5 rounded-full ${spark ? 'bg-[#ff2d72]' : 'bg-[#35142f]'}`} />
-          <span className={`block h-2.5 w-2.5 rounded-full ${spark ? 'bg-[#ff2d72]' : 'bg-[#35142f]'}`} />
-        </div>
-        <div className={`absolute bottom-6 h-2.5 ${calm ? 'w-7 rounded-b-full border-b-[3px] border-[#35142f]' : 'w-6 rounded-full bg-[#35142f]'}`} />
-        <div className="absolute -right-3 top-3 rotate-6 rounded-full bg-[#80ffdb] px-2 py-1 text-[9px] font-black text-[#35142f]">
-          {spark ? 'Filmy' : calm ? 'Green flag' : 'Sorted'}
-        </div>
-      </div>
-    </motion.div>
-  );
-}
-
-function buildInstagramShareCard(result: DateOrDumpResult, answers: DateOrDumpAnswer[], avgMs: number) {
-  const winnerCategory = mostCommon(
-    answers.flatMap((answer) => answer.winner.item_snapshot.map((item) => item.category)),
-    result.tags[0] ?? 'Clean fits',
-  );
-  const favoriteModel = mostCommon(
-    answers.map((answer) => answer.winner.model_name),
-    'green-flag boys',
-  );
-  const favoriteLook = mostCommon(
-    answers.map((answer) => lookTitleFromItems(answer.winner)).filter(Boolean),
-    result.tags[0] ?? 'clean-boy aura',
-  );
-  const vibe = avgMs < 1800 ? 'Fast' : avgMs < 3200 ? 'Sorted' : 'Slow';
-  const verdict = funnyVerdict(result.title || result.archetype, winnerCategory, avgMs);
-
-  return {
-    handle: '@dfb.dateordump',
-    verdict,
-    vibe,
-    caption: `${favoriteModel} in ${favoriteLook} got your attention. Tumhara type: ${winnerCategory.toLowerCase()} wala boy, thoda filmy, thoda sorted, aur outfit mein bilkul "main character entry".`,
-    slangLine: `${verdict} energy, confirm hai.`,
-  };
-}
-
-function funnyVerdict(title: string, category: string, avgMs: number) {
-  if (/ktm|street|sneaker|denim|jacket/i.test(`${title} ${category}`)) return 'KTM Lover';
-  if (/mumma|shirt|formal|linen|tailor/i.test(`${title} ${category}`)) return "Mumma's Boy Magnet";
-  if (/rajma|slow|comfort|soft|casual/i.test(`${title} ${category}`)) return randomLabel(['Rajma Chawal Boy', 'Soft Launch Raja', 'Chai Tapri Charmer']);
-  if (/majnu|spark|instant|filmy/i.test(`${title} ${category}`) || avgMs < 1700) return 'Majnu Boy Radar';
-  if (/wannabe|watch|accessory|chain/i.test(`${title} ${category}`)) return 'Wannabe Boy Filter';
-  if (/red|bold|party/i.test(`${title} ${category}`)) return 'Red Flag Romeo';
-  if (/shaadi|kurta|festive|ethnic/i.test(`${title} ${category}`)) return 'Shaadi Ready Prince';
-  return title || randomLabel(['Clean Boy Collector', 'Metro Crush', 'Green Flag Launda']);
-}
-
-function randomLabel(labels: string[]) {
-  return labels[Math.floor(Math.random() * labels.length)] ?? labels[0];
-}
-
-function lookTitleFromItems(look: DateOrDumpGameLook) {
-  const names = look.item_snapshot
-    .map((item) => item.name?.trim())
-    .filter(Boolean)
-    .slice(0, 3);
-  if (names.length) return names.join(' + ');
-  return look.theme || 'Runway fit';
-}
-
-function mostCommon(values: string[], fallback: string) {
-  const counts = new Map<string, number>();
-  values
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .forEach((value) => counts.set(value, (counts.get(value) ?? 0) + 1));
-  const [top] = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  return top?.[0] ?? fallback;
-}
-
-function SparkleBurst() {
-  return (
-    <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden">
-      {Array.from({ length: 18 }).map((_, i) => {
-        const angle = (i / 18) * Math.PI * 2;
-        const x = Math.cos(angle) * (70 + (i % 3) * 28);
-        const y = Math.sin(angle) * (70 + (i % 4) * 18);
+    <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden">
+      {Array.from({ length: 42 }).map((_, i) => {
+        const angle = (i / 42) * Math.PI * 2;
+        const heartX = 16 * Math.sin(angle) ** 3 * 3.8;
+        const heartY = -(
+          13 * Math.cos(angle)
+          - 5 * Math.cos(2 * angle)
+          - 2 * Math.cos(3 * angle)
+          - Math.cos(4 * angle)
+        ) * 3.8;
+        const burstX = Math.cos(angle) * (86 + (i % 4) * 34);
+        const burstY = Math.sin(angle) * (86 + (i % 5) * 24);
+        const color = colors[i % colors.length];
+        const isRibbon = i % 3 === 0;
         return (
           <motion.span
             key={i}
-            className="absolute left-1/2 top-1/2 h-3 w-3 rounded-full bg-[#ffd166] shadow-[0_0_18px_rgba(255,209,102,0.8)]"
-            initial={{ x: 0, y: 0, scale: 0, opacity: 1 }}
-            animate={{ x, y, scale: [0, 1.2, 0.2], opacity: [1, 1, 0] }}
-            transition={{ duration: 0.68, ease: 'easeOut' }}
+            className={`absolute left-1/2 top-1/2 ${isRibbon ? 'h-7 w-3 rounded-sm' : 'h-4 w-4 rounded-full'} border border-white/55 shadow-[0_0_18px_rgba(255,20,147,0.75)]`}
+            style={{ backgroundColor: color }}
+            initial={{ x: 0, y: 0, rotate: 0, scale: 0, opacity: 1 }}
+            animate={{
+              x: [0, heartX, burstX],
+              y: [0, heartY, burstY],
+              rotate: isRibbon ? [0, 190 + i * 11] : [0, 90],
+              scale: [0, 1.16, 1.22, 0.18],
+              opacity: [0, 1, 1, 0],
+            }}
+            transition={{ duration: 1.05, ease: 'easeOut' }}
           />
         );
       })}
@@ -1234,16 +895,168 @@ function SparkleBurst() {
   );
 }
 
+function RoseBurst() {
+  const colors = ['#ff1493', '#ffffff', '#050005', '#ff5bb3', '#f7f2f5'];
+  return (
+    <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden">
+      {Array.from({ length: 54 }).map((_, i) => {
+        const isStem = i >= 42;
+        const angle = (i / 42) * Math.PI * 2;
+        const petalWave = Math.abs(Math.sin(angle * 4));
+        const roseRadius = 18 + petalWave * 42;
+        const roseX = isStem ? (i % 2 === 0 ? -5 : 5) : Math.cos(angle) * roseRadius;
+        const roseY = isStem ? 24 + (i - 42) * 6 : Math.sin(angle) * roseRadius * 0.76 - 12;
+        const burstAngle = angle + (i % 5) * 0.18;
+        const burstX = Math.cos(burstAngle) * (96 + (i % 6) * 26);
+        const burstY = Math.sin(burstAngle) * (90 + (i % 5) * 24);
+        const color = isStem ? (i % 2 === 0 ? '#ffffff' : '#050005') : colors[i % colors.length];
+        const isRibbon = i % 4 === 0;
+
+        return (
+          <motion.span
+            key={i}
+            className={`absolute left-1/2 top-1/2 border border-white/60 shadow-[0_0_20px_rgba(255,20,147,0.82)] ${
+              isStem
+                ? 'h-7 w-2 rounded-full'
+                : isRibbon
+                  ? 'h-8 w-3 rounded-sm'
+                  : 'h-5 w-5 rounded-full'
+            }`}
+            style={{ backgroundColor: color }}
+            initial={{ x: 0, y: 0, rotate: 0, scale: 0, opacity: 1 }}
+            animate={{
+              x: [0, roseX, roseX, burstX],
+              y: [0, roseY, roseY, burstY],
+              rotate: isStem ? [0, -18, -18, 150 + i * 9] : [0, i * 8, i * 8, 220 + i * 12],
+              scale: [0, 1.12, 1.12, 0.22],
+              opacity: [0, 1, 1, 0],
+            }}
+            transition={{ duration: 1.18, times: [0, 0.38, 0.52, 1], ease: 'easeOut' }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function pickDateOrDumpResultCard(
+  result: DateOrDumpResult,
+  answers: DateOrDumpAnswer[],
+): DateOrDumpResultCardId {
+  const seed = [
+    result.title,
+    result.archetype,
+    result.summary,
+    result.tags.join(' '),
+    ...answers.flatMap((answer) => [
+      answer.winner.id,
+      answer.winnerSide,
+      String(answer.responseMs),
+      answer.winner.theme,
+      ...answer.winner.item_snapshot.map((item) => `${item.name} ${item.category}`),
+    ]),
+  ].join('|');
+  const hash = stableHash(seed);
+  return DATE_OR_DUMP_RESULT_CARD_LIST[hash % DATE_OR_DUMP_RESULT_CARD_LIST.length].id;
+}
+
+function buildDateOrDumpShareCaption(result: DateOrDumpResult, answers: DateOrDumpAnswer[]) {
+  const pickedLooks = answers.map((answer) => answer.winner);
+  const roseLooks = answers
+    .map((answer) => answer.roseLook)
+    .filter((look): look is DateOrDumpGameLook => Boolean(look));
+  const topModel = pickedLooks[0]?.model_name || 'my mystery fit';
+  const topItems = pickedLooks
+    .flatMap((look) => look.item_snapshot.map((item) => item.name || item.category))
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(' + ');
+  const fitLine = topItems ? `${topModel} in ${topItems}` : topModel;
+  const roseLine = roseLooks.length > 0
+    ? `Rose pick: ${roseLooks[0].model_name}${roseLooks.length > 1 ? ` + ${roseLooks.length - 1} more` : ''}.`
+    : 'No rose pick this time, pure savage voting.';
+  const gameUrl = `${window.location.origin}/game`;
+  return [
+    `I got "${result.archetype || result.title}" on DFB Date or Dump.`,
+    `My winning pick screamed: ${fitLine}.`,
+    roseLine,
+    `Ab tum log bhi play karo and tell me your type. Check it here: ${gameUrl}`,
+    'Send your result back on WhatsApp, group chat judgement compulsory.',
+    '#DateOrDump #DFB',
+  ].join('\n');
+}
+
+async function posterImageFile(card: DateOrDumpResultCardConfig) {
+  try {
+    const response = await fetch(card.src);
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    return new File([blob], `dfb-date-or-dump-${card.id}.png`, {
+      type: blob.type || 'image/png',
+    });
+  } catch {
+    return null;
+  }
+}
+
+function recordRosePreferenceLocal(
+  anonymousPlayerId: string,
+  duel: DateOrDumpDuel,
+  roseSide: DateOrDumpSide,
+) {
+  if (typeof window === 'undefined') return;
+  const roseLook = roseSide === 'left' ? duel.left : duel.right;
+  const key = 'dfb_date_or_dump_rose_preferences';
+  try {
+    const existing = JSON.parse(window.localStorage.getItem(key) || '[]') as unknown[];
+    const next = [
+      {
+        anonymousPlayerId,
+        duelClientId: duel.client_id,
+        roundIndex: duel.round_index,
+        modelId: duel.model_id,
+        modelName: duel.model_name,
+        roseSide,
+        lookId: roseLook.id,
+        lookTheme: roseLook.theme,
+        itemIds: roseLook.item_ids,
+        createdAt: new Date().toISOString(),
+      },
+      ...existing,
+    ].slice(0, 100);
+    window.localStorage.setItem(key, JSON.stringify(next));
+  } catch {
+    // Local analytics should never block the game flow.
+  }
+}
+
+function stableHash(seed: string) {
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash);
+}
+
 type DateOrDumpSound = 'start' | 'tap' | 'pick' | 'tick' | 'timeout' | 'result';
 
 function createDateOrDumpAudio() {
   const AudioContextCtor = window.AudioContext
-    || (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+  if (!AudioContextCtor) {
+    return {
+      play: () => undefined,
+      resume: async () => undefined,
+      close: () => undefined,
+    };
+  }
+
   const context = new AudioContextCtor();
   const master = context.createGain();
   master.gain.value = 0.16;
   master.connect(context.destination);
-  let musicNodes: { oscillators: OscillatorNode[]; gain: GainNode; timer: number } | null = null;
 
   const resume = async () => {
     if (context.state === 'suspended') await context.resume();
@@ -1253,21 +1066,21 @@ function createDateOrDumpAudio() {
     void resume();
     const now = context.currentTime;
     const patterns: Record<DateOrDumpSound, Array<[number, number, number]>> = {
-      start: [[220, 0, 0.08], [440, 0.08, 0.1], [660, 0.18, 0.12]],
-      tap: [[360, 0, 0.045]],
-      pick: [[520, 0, 0.06], [780, 0.07, 0.08], [1040, 0.15, 0.09]],
-      tick: [[880, 0, 0.045]],
-      timeout: [[140, 0, 0.14], [90, 0.13, 0.24]],
-      result: [[392, 0, 0.08], [523.25, 0.09, 0.1], [783.99, 0.2, 0.18]],
+      start: [[261.63, 0, 0.08], [329.63, 0.08, 0.1], [493.88, 0.18, 0.12]],
+      tap: [[523.25, 0, 0.045]],
+      pick: [[659.25, 0, 0.06], [987.77, 0.07, 0.08], [1318.51, 0.15, 0.09]],
+      tick: [[1046.5, 0, 0.045]],
+      timeout: [[196, 0, 0.14], [130.81, 0.13, 0.24]],
+      result: [[329.63, 0, 0.08], [493.88, 0.09, 0.1], [783.99, 0.2, 0.18]],
     };
 
     patterns[sound].forEach(([frequency, delay, duration]) => {
       const oscillator = context.createOscillator();
       const gain = context.createGain();
-      oscillator.type = sound === 'timeout' ? 'sawtooth' : 'triangle';
+      oscillator.type = sound === 'timeout' ? 'triangle' : 'sine';
       oscillator.frequency.setValueAtTime(frequency, now + delay);
       gain.gain.setValueAtTime(0.0001, now + delay);
-      gain.gain.exponentialRampToValueAtTime(sound === 'timeout' ? 0.22 : 0.18, now + delay + 0.012);
+      gain.gain.exponentialRampToValueAtTime(sound === 'timeout' ? 0.18 : 0.14, now + delay + 0.012);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + delay + duration);
       oscillator.connect(gain);
       gain.connect(master);
@@ -1276,45 +1089,9 @@ function createDateOrDumpAudio() {
     });
   };
 
-  const startMusic = () => {
-    void resume();
-    if (musicNodes) return;
-    const gain = context.createGain();
-    gain.gain.value = 0.045;
-    gain.connect(master);
-    const bass = context.createOscillator();
-    const lead = context.createOscillator();
-    bass.type = 'square';
-    lead.type = 'sawtooth';
-    bass.frequency.value = 55;
-    lead.frequency.value = 220;
-    bass.connect(gain);
-    lead.connect(gain);
-    bass.start();
-    lead.start();
-    const notes = [220, 277.18, 329.63, 440, 329.63, 277.18];
-    let step = 0;
-    const timer = window.setInterval(() => {
-      const t = context.currentTime;
-      bass.frequency.setTargetAtTime(step % 2 === 0 ? 55 : 82.41, t, 0.03);
-      lead.frequency.setTargetAtTime(notes[step % notes.length], t, 0.025);
-      step += 1;
-    }, 220);
-    musicNodes = { oscillators: [bass, lead], gain, timer };
+  const close = () => {
+    if (context.state !== 'closed') void context.close();
   };
 
-  const stopMusic = () => {
-    if (!musicNodes) return;
-    const nodes = musicNodes;
-    musicNodes = null;
-    window.clearInterval(nodes.timer);
-    const t = context.currentTime;
-    nodes.gain.gain.setTargetAtTime(0.0001, t, 0.04);
-    window.setTimeout(() => {
-      nodes.oscillators.forEach((oscillator) => oscillator.stop());
-      nodes.gain.disconnect();
-    }, 160);
-  };
-
-  return { play, resume, startMusic, stopMusic };
+  return { play, resume, close };
 }

@@ -50,6 +50,8 @@ export type DateOrDumpAnswer = {
   winner: DateOrDumpGameLook;
   loser: DateOrDumpGameLook;
   responseMs: number;
+  roseSide?: DateOrDumpSide | null;
+  roseLook?: DateOrDumpGameLook | null;
 };
 
 export type DateOrDumpResult = {
@@ -491,6 +493,14 @@ function summarizeAnswers(answers: DateOrDumpAnswer[], timeoutCount = 0) {
   const winnerCategories = topValues(answers.flatMap((answer) => answer.winner.item_snapshot.map((item) => item.category)), 5);
   const loserCategories = topValues(answers.flatMap((answer) => answer.loser.item_snapshot.map((item) => item.category)), 5);
   const winnerThemes = topValues(answers.map((answer) => answer.winner.theme).filter(Boolean), 4);
+  const roseModels = topValues(
+    answers.map((answer) => answer.roseLook?.model_name ?? '').filter(Boolean),
+    3,
+  );
+  const roseCategories = topValues(
+    answers.flatMap((answer) => answer.roseLook?.item_snapshot.map((item) => item.category) ?? []),
+    4,
+  );
   const avgMs = answers.length
     ? Math.round(answers.reduce((sum, answer) => sum + answer.responseMs, 0) / answers.length)
     : 0;
@@ -501,6 +511,8 @@ function summarizeAnswers(answers: DateOrDumpAnswer[], timeoutCount = 0) {
     winnerCategories,
     loserCategories,
     winnerThemes,
+    roseModels,
+    roseCategories,
     averageDecisionMs: avgMs,
     sampleWinners: answers.slice(0, 6).map((answer) => ({
       model: answer.winner.model_name,

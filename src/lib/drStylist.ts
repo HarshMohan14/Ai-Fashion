@@ -110,6 +110,156 @@ function isHostedPhotosheetUrl(url: string | null | undefined): url is string {
   return /^https?:\/\//i.test(url?.trim() ?? '');
 }
 
+const RUNWAY_CARD_WIDTH = 1080;
+const RUNWAY_CARD_HEIGHT = 1920;
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const [meta, data] = dataUrl.split(',');
+  const mime = meta.match(/data:([^;]+)/)?.[1] ?? 'image/png';
+  const binary = atob(data ?? '');
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+async function loadCanvasImage(source: string): Promise<HTMLImageElement> {
+  let objectUrl = '';
+  const imgSource = source.startsWith('data:')
+    ? source
+    : await fetch(source)
+      .then((response) => {
+        if (!response.ok) throw new Error(`Could not fetch generated runway image (${response.status}).`);
+        return response.blob();
+      })
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        return objectUrl;
+      });
+
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      resolve(img);
+    };
+    img.onerror = () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      reject(new Error('Could not load generated runway image for card normalization.'));
+    };
+    img.src = imgSource;
+  });
+}
+
+function detectSubjectBounds(ctx: CanvasRenderingContext2D, width: number, height: number) {
+  const sample = 4;
+  const cornerSize = Math.max(12, Math.floor(Math.min(width, height) * 0.06));
+  const cornerPixels = [
+    ...Array.from({ length: cornerSize }, (_, y) => [0, y] as const),
+    ...Array.from({ length: cornerSize }, (_, y) => [width - cornerSize, y] as const),
+    ...Array.from({ length: cornerSize }, (_, y) => [0, height - cornerSize + y] as const),
+    ...Array.from({ length: cornerSize }, (_, y) => [width - cornerSize, height - cornerSize + y] as const),
+  ];
+
+  let bgR = 0;
+  let bgG = 0;
+  let bgB = 0;
+  cornerPixels.forEach(([x, y]) => {
+    const pixel = ctx.getImageData(x, y, 1, 1).data;
+    bgR += pixel[0];
+    bgG += pixel[1];
+    bgB += pixel[2];
+  });
+  bgR /= cornerPixels.length;
+  bgG /= cornerPixels.length;
+  bgB /= cornerPixels.length;
+
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+
+  const data = ctx.getImageData(0, 0, width, height).data;
+  for (let y = 0; y < height; y += sample) {
+    for (let x = 0; x < width; x += sample) {
+      const index = (y * width + x) * 4;
+      const r = data[index];
+      const g = data[index + 1];
+      const b = data[index + 2];
+      const distance = Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB);
+      const darkness = 255 - Math.max(r, g, b);
+      if (distance > 42 || darkness > 36) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+  }
+
+  if (minX >= maxX || minY >= maxY) return { x: 0, y: 0, width, height };
+  const marginX = Math.floor((maxX - minX) * 0.16);
+  const marginY = Math.floor((maxY - minY) * 0.09);
+  return {
+    x: Math.max(0, minX - marginX),
+    y: Math.max(0, minY - marginY),
+    width: Math.min(width, maxX - minX + marginX * 2),
+    height: Math.min(height, maxY - minY + marginY * 2),
+  };
+}
+
+async function normalizeRunwayImageForGameCard(source: string): Promise<string> {
+  const img = await loadCanvasImage(source);
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = img.naturalWidth;
+  sourceCanvas.height = img.naturalHeight;
+  const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
+  if (!sourceCtx) return source;
+  sourceCtx.drawImage(img, 0, 0);
+
+  const bounds = detectSubjectBounds(sourceCtx, sourceCanvas.width, sourceCanvas.height);
+  const canvas = document.createElement('canvas');
+  canvas.width = RUNWAY_CARD_WIDTH;
+  canvas.height = RUNWAY_CARD_HEIGHT;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return source;
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const maxWidth = canvas.width * 0.88;
+  const maxHeight = canvas.height * 0.9;
+  const scale = Math.min(maxWidth / bounds.width, maxHeight / bounds.height);
+  const drawWidth = bounds.width * scale;
+  const drawHeight = bounds.height * scale;
+  const drawX = (canvas.width - drawWidth) / 2;
+  const drawY = canvas.height * 0.055 + (maxHeight - drawHeight) / 2;
+
+  ctx.drawImage(
+    sourceCanvas,
+    bounds.x,
+    bounds.y,
+    bounds.width,
+    bounds.height,
+    drawX,
+    drawY,
+    drawWidth,
+    drawHeight,
+  );
+
+  return canvas.toDataURL('image/jpeg', 0.92);
+}
+
+async function uploadRunwayDataUrl(dataUrl: string, modelId: string) {
+  const blob = dataUrlToBlob(dataUrl);
+  const fileName = `runway/${modelId}/${Date.now()}.jpg`;
+  const { error } = await supabase.storage
+    .from('model-photosheets')
+    .upload(fileName, blob, { contentType: blob.type || 'image/jpeg', upsert: true });
+  if (error) throw error;
+  const { data } = supabase.storage.from('model-photosheets').getPublicUrl(fileName);
+  return data.publicUrl;
+}
+
 export function buildPermutations(
   models: StylistModel[],
   items: WardrobeItem[],
@@ -180,7 +330,7 @@ export function buildPrompt(
   if (styleContext) {
     parts.push(`User style context: ${styleContext}. Use this only to clarify garment coordination or outfit intent; never use it to change the person's identity, body, pose, or white studio background.`);
   }
-  parts.push('Output one full-length neutral studio fashion photograph with the complete outfit clearly visible on the model.');
+  parts.push('Output one vertical 9:16 full-length neutral studio fashion photograph. The model must be centered head-to-toe, feet visible, occupying about 85-90% of the image height with narrow side margins so the image fits portrait game cards consistently.');
   if (feedback) parts.push(`Revision: ${feedback}.`);
   return parts.join(' ');
 }
@@ -265,13 +415,14 @@ export async function generateLook(
     text: `Write a continuous, photorealistic image generation prompt describing this exact person wearing these exact clothes.
     Crucial Directives:
     1. Identity: The person must remain exactly the same as the model references. Preserve face, jaw, eyes, nose, hair, skin tone, body mass, height impression, posture, proportions, and shoulder-to-waist structure.
-    2. Setting: Use a clean white studio background with no editorial scene, no props, no stylized environment, and no mood-driven transformation.
-    3. Pose: Use a simple natural standing full-body pose that shows the complete outfit. Do not invent dramatic fashion poses.
-    4. Garment Details: The final image generation model will NOT see the reference images. Describe the clothing references in exact visual detail: colors, patterns, fabric textures, cuts, lengths, and how they sit naturally on the same model.
-    5. Photography: Raw realistic studio photograph, DSLR clarity, natural skin texture, visible pores, normal human imperfections, accurate hands and limbs, no 3D render, no CGI, no airbrushed plastic look.
-    6. Style context: ${styleContext ? `${styleContext}. Use this only to clarify garment coordination or outfit intent; do not change identity, body, pose, or background.` : 'No additional styling. Keep the output neutral and identity-first.'}
-    ${p.model.physical_description ? `7. Physical authenticity: ${p.model.physical_description}. Do not slim, beautify, age-shift, reshape, or idealize the model.` : ''}
-    ${ragKnowledgeText ? `8. rag_knowledge_base feedback for this model, grouped by Face, Body, Style, Hair, and Complexion:\n${ragKnowledgeText}\nApply these corrections for consistency.` : ''}
+    2. Canvas: Generate a vertical 9:16 portrait image, not square and not landscape. The model must be centered head-to-toe with the full body visible, feet visible, and narrow side margins. The model should occupy about 85-90% of the image height.
+    3. Setting: Use a clean white studio background with no editorial scene, no props, no stylized environment, and no mood-driven transformation.
+    4. Pose: Use a simple natural standing full-body pose that shows the complete outfit. Do not invent dramatic fashion poses.
+    5. Garment Details: The final image generation model will NOT see the reference images. Describe the clothing references in exact visual detail: colors, patterns, fabric textures, cuts, lengths, and how they sit naturally on the same model.
+    6. Photography: Raw realistic studio photograph, DSLR clarity, natural skin texture, visible pores, normal human imperfections, accurate hands and limbs, no 3D render, no CGI, no airbrushed plastic look.
+    7. Style context: ${styleContext ? `${styleContext}. Use this only to clarify garment coordination or outfit intent; do not change identity, body, pose, or background.` : 'No additional styling. Keep the output neutral and identity-first.'}
+    ${p.model.physical_description ? `8. Physical authenticity: ${p.model.physical_description}. Do not slim, beautify, age-shift, reshape, or idealize the model.` : ''}
+    ${ragKnowledgeText ? `9. rag_knowledge_base feedback for this model, grouped by Face, Body, Style, Hair, and Complexion:\n${ragKnowledgeText}\nApply these corrections for consistency.` : ''}
     Do not use markdown formatting, bullet points, or introductory text. Just output the final image generation prompt.`
   });
 
@@ -282,6 +433,9 @@ export async function generateLook(
   );
   let synthesizedPrompt = aiResult.response.text().trim();
   synthesizedPrompt = synthesizedPrompt.slice(0, 800);
+  synthesizedPrompt = `${synthesizedPrompt}
+
+MANDATORY RUNWAY CARD FORMAT: vertical 9:16 portrait, clean white studio background, one centered full-body model visible from head to toe with feet visible, narrow side margins, no square canvas, no landscape canvas, no wide empty whitespace.`;
   
   if (import.meta.env.DEV) {
     console.debug('[Dr. Stylist] Final Synthesized Prompt:', synthesizedPrompt);
@@ -308,10 +462,16 @@ export async function generateLook(
   const persistedSnapshot = snapshot.map(({ id, name, category }) => ({ id, name, image: '', category }));
   const itemIds = snapshot.map((s) => s.id);
 
-  // Download any temporary provider image and upload it to Supabase Storage.
+  // Normalize every Runway image into a game-card-friendly 9:16 full-body portrait
+  // before it is stored. This keeps Date or Dump cards consistent without unsafe UI zooms.
   let finalImageUrl = result.dataUrl;
-  if (finalImageUrl.startsWith('http')) {
-    try {
+  try {
+    const normalizedDataUrl = await normalizeRunwayImageForGameCard(finalImageUrl);
+    finalImageUrl = await uploadRunwayDataUrl(normalizedDataUrl, p.model.id);
+  } catch (err) {
+    console.warn('[Dr. Stylist] Failed to normalize/upload runway image, falling back to original provider output', err);
+    if (finalImageUrl.startsWith('http')) {
+      try {
       const response = await fetch(finalImageUrl);
       if (response.ok) {
         const blob = await response.blob();
@@ -330,8 +490,9 @@ export async function generateLook(
           console.error('[Dr. Stylist] Supabase storage upload failed:', uploadError);
         }
       }
-    } catch (err) {
-      console.warn('[Dr. Stylist] Failed to fetch and upload runway look to Supabase, falling back to Replicate URL', err);
+      } catch (uploadErr) {
+        console.warn('[Dr. Stylist] Failed to fetch and upload runway look to Supabase, falling back to provider URL', uploadErr);
+      }
     }
   }
 

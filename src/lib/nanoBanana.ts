@@ -289,7 +289,8 @@ export async function renderLook(input: LookRenderInput): Promise<LookRenderResu
 
 CRITICAL CORRECTIONS BASED ON PREVIOUS FAILED ATTEMPT:
 Garment flaws to fix: ${garmentFlaws || 'No garment flaws reported.'}
-Keep the background neutral white, preserve every selected garment, and keep the model references available only for consistency.`;
+Keep the background neutral white, preserve every selected garment, and keep the model references available only for consistency.
+Maintain the same vertical 9:16 portrait card format: one centered full-body model, head-to-toe visible, feet visible, narrow side margins, no square canvas, no landscape canvas, and no excessive empty whitespace.`;
           baseGeneratedImage = ''; // Reset for next iteration
         }
       }
