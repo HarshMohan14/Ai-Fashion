@@ -524,7 +524,7 @@ function PlayingScreen({
 
       <ScenarioBox scenario={duel.scenario} timeLeft={timeLeft} />
 
-      <div className="relative grid min-h-[360px] flex-1 grid-cols-2 gap-5">
+      <div className="relative grid flex-1 grid-cols-2 items-center gap-5">
         <ChoiceCard
           side="left"
           look={duel.left}
@@ -758,7 +758,7 @@ function ChoiceCard({
         onChoose(side);
       }}
       onKeyDown={chooseFromKeyboard}
-      className={`relative min-h-[360px] overflow-hidden rounded-[30px] border-[3px] bg-[#f7f2f5] transition-[filter] duration-500 ${sideClass} ${rejected || timedOut ? 'grayscale' : ''}`}
+      className={`relative aspect-[9/16] w-full overflow-hidden rounded-[30px] border-[3px] bg-[#f7f2f5] transition-[filter] duration-500 ${sideClass} ${rejected || timedOut ? 'grayscale' : ''}`}
       whileTap={{ scale: 0.97 }}
       animate={{
         scale: picked ? 1.045 : rejected || timedOut ? 0.96 : 1,
@@ -826,9 +826,25 @@ function SmartFullBodyImage({
   onBroken?: () => void;
 }) {
   const [broken, setBroken] = useState(false);
+  const [displaySrc, setDisplaySrc] = useState('');
 
   useEffect(() => {
     setBroken(false);
+    setDisplaySrc('');
+    let cancelled = false;
+    if (!src) return undefined;
+
+    normalizeDateOrDumpCardImage(src)
+      .then((normalized) => {
+        if (!cancelled) setDisplaySrc(normalized);
+      })
+      .catch(() => {
+        if (!cancelled) setDisplaySrc(src);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [src]);
 
   if (!src || broken) {
@@ -840,9 +856,9 @@ function SmartFullBodyImage({
   }
 
   return (
-    <div className="absolute inset-0 overflow-hidden bg-[#f8f7f8]">
+    <div className="absolute inset-0 overflow-hidden bg-white">
       <img
-        src={src}
+        src={displaySrc || src}
         alt={alt}
         referrerPolicy="no-referrer"
         loading="eager"
@@ -851,10 +867,150 @@ function SmartFullBodyImage({
           setBroken(true);
           onBroken?.();
         }}
-        className="relative z-10 h-full w-full object-contain object-center"
+        className="relative z-10 h-full w-full object-cover object-center"
       />
     </div>
   );
+}
+
+type DateOrDumpImageBounds = { x: number; y: number; width: number; height: number };
+
+function loadGameCardImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.referrerPolicy = 'no-referrer';
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+function detectGameCardSubjectBounds(ctx: CanvasRenderingContext2D, width: number, height: number): DateOrDumpImageBounds {
+  const sample = 3;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const data = ctx.getImageData(0, 0, width, height).data;
+
+  for (let y = 0; y < height; y += sample) {
+    for (let x = 0; x < width; x += sample) {
+      const index = (y * width + x) * 4;
+      const r = data[index];
+      const g = data[index + 1];
+      const b = data[index + 2];
+      const maxChannel = Math.max(r, g, b);
+      const minChannel = Math.min(r, g, b);
+      const brightness = (r + g + b) / 3;
+      const saturation = maxChannel - minChannel;
+      const isSubject = brightness < 168 || saturation > 44;
+
+      if (isSubject) {
+        xs.push(x);
+        ys.push(y);
+      }
+    }
+  }
+
+  if (xs.length < 50 || ys.length < 50) return { x: 0, y: 0, width, height };
+
+  xs.sort((a, b) => a - b);
+  ys.sort((a, b) => a - b);
+  const percentile = (values: number[], ratio: number) => values[
+    Math.min(values.length - 1, Math.max(0, Math.floor(values.length * ratio)))
+  ] ?? 0;
+  const minX = percentile(xs, 0.01);
+  const maxX = percentile(xs, 0.99);
+  const minY = percentile(ys, 0.004);
+  const maxY = percentile(ys, 0.996);
+  const subjectWidth = Math.max(1, maxX - minX);
+  const subjectHeight = Math.max(1, maxY - minY);
+  const padX = Math.max(subjectWidth * 0.2, width * 0.035);
+  const padTop = Math.max(subjectHeight * 0.08, height * 0.02);
+  const padBottom = Math.max(subjectHeight * 0.16, height * 0.04);
+  const x = Math.max(0, Math.floor(minX - padX));
+  const y = Math.max(0, Math.floor(minY - padTop));
+
+  return {
+    x,
+    y,
+    width: Math.min(width - x, Math.ceil(subjectWidth + padX * 2)),
+    height: Math.min(height - y, Math.ceil(subjectHeight + padTop + padBottom)),
+  };
+}
+
+async function normalizeDateOrDumpCardImage(src: string) {
+  const img = await loadGameCardImage(src);
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = img.naturalWidth || img.width;
+  sourceCanvas.height = img.naturalHeight || img.height;
+  const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
+  if (!sourceCtx) return src;
+  sourceCtx.drawImage(img, 0, 0);
+
+  const bounds = detectGameCardSubjectBounds(sourceCtx, sourceCanvas.width, sourceCanvas.height);
+  const sourceAspect = sourceCanvas.width / sourceCanvas.height;
+  const targetAspect = 9 / 16;
+  const subjectHeightRatio = bounds.height / sourceCanvas.height;
+  const subjectWidthRatio = bounds.width / sourceCanvas.width;
+  const alreadyGameFramed = Math.abs(sourceAspect - targetAspect) < 0.04
+    && subjectHeightRatio > 0.62
+    && subjectWidthRatio > 0.32;
+  if (alreadyGameFramed) return src;
+
+  const card = document.createElement('canvas');
+  card.width = 720;
+  card.height = 1280;
+  const ctx = card.getContext('2d');
+  if (!ctx) return src;
+
+  const gradient = ctx.createLinearGradient(0, 0, 0, card.height);
+  gradient.addColorStop(0, '#FFFFFF');
+  gradient.addColorStop(0.68, '#FFFFFF');
+  gradient.addColorStop(1, '#F7F2F5');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, card.width, card.height);
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.08)';
+  ctx.filter = 'blur(16px)';
+  ctx.beginPath();
+  ctx.ellipse(card.width / 2, card.height * 0.905, card.width * 0.28, card.height * 0.034, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  ctx.fillStyle = '#FFFFFF';
+  ctx.strokeStyle = 'rgba(0,0,0,0.09)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(card.width / 2, card.height * 0.885, card.width * 0.32, card.height * 0.044, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+
+  const maxWidth = card.width * 0.86;
+  const maxHeight = card.height * 0.82;
+  const scale = Math.min(maxWidth / bounds.width, maxHeight / bounds.height);
+  const drawWidth = bounds.width * scale;
+  const drawHeight = bounds.height * scale;
+  const drawX = (card.width - drawWidth) / 2;
+  const drawY = card.height * 0.905 - drawHeight;
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(
+    sourceCanvas,
+    bounds.x,
+    bounds.y,
+    bounds.width,
+    bounds.height,
+    drawX,
+    drawY,
+    drawWidth,
+    drawHeight,
+  );
+
+  return card.toDataURL('image/jpeg', 0.9);
 }
 
 function HeartBurst() {
