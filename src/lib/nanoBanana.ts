@@ -128,6 +128,8 @@ type GeminiResponsePart = { inlineData?: { data?: string; mimeType?: string } };
 type FaceSwapProvider = 'replicate' | 'none';
 type ReplicateFaceModel = 'flux-pulid' | 'codeplugtech';
 
+export const RUNWAY_CARD_FORMAT_PROMPT = `FIXED RUNWAY CARD OUTPUT FORMAT: Generate the final image as a true vertical 9:16 portrait bitmap. The entire returned image must be this 9:16 studio card directly, not a square or landscape image and not a 9:16 page containing a smaller rectangular photo. Show one centered full-body model from head to toe with feet visible, standing on a clean white round pedestal in a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow. Keep narrow side margins and make the model plus pedestal fit naturally inside the 9:16 frame. Use a stylish outfit-aware fashion pose while preserving exact body proportions. No crop, no inset photo, no inner rectangle, no border, no frame, no poster, no screenshot-within-image.`;
+
 const REPLICATE_FLUX_PULID_VERSION = '8baa7ef2255075b46f4d91cd238c21d31181b3e6a864463f967960bb0112525b';
 const REPLICATE_CODEPLUGTECH_FACE_SWAP_VERSION = '278a81e7ebb22db98bcba54de985d22cc1abeead2754eb1f2af717247be69b34';
 
@@ -161,6 +163,10 @@ export function generateGeminiContentWithRetry<T>(
 
 export function toGeminiImagePart(part: GeminiImagePart): GeminiApiImagePart {
   return { inlineData: part.inlineData };
+}
+
+function withRunwayCardFormat(prompt: string) {
+  return `${prompt.trim()}\n\n${RUNWAY_CARD_FORMAT_PROMPT}`;
 }
 
 function isRetryableProviderError(error: unknown) {
@@ -236,7 +242,7 @@ export async function renderLook(input: LookRenderInput): Promise<LookRenderResu
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-image' });
     let attempts = 0;
     const maxAttempts = 2; // Initial attempt + 1 redraw if flaws found
-    let currentPrompt = input.prompt;
+    let currentPrompt = withRunwayCardFormat(input.prompt);
 
     while (attempts < maxAttempts) {
       attempts++;
@@ -285,12 +291,12 @@ export async function renderLook(input: LookRenderInput): Promise<LookRenderResu
           break;
         } else {
           if (import.meta.env.DEV) console.log('[Dr. Stylist] Image failed critique. Redrawing...');
-          currentPrompt = `${input.prompt}
+          currentPrompt = withRunwayCardFormat(`${input.prompt}
 
 CRITICAL CORRECTIONS BASED ON PREVIOUS FAILED ATTEMPT:
 Garment flaws to fix: ${garmentFlaws || 'No garment flaws reported.'}
 Keep the background neutral white, preserve every selected garment, and keep the model references available only for consistency.
-Maintain the same vertical 9:16 portrait card format: one centered full-body model, head-to-toe visible, feet visible, standing on a clean white round pedestal in a seamless white photo studio with soft diffused lighting, narrow side margins, stylish outfit-aware pose, no stiff passport-photo stance, no square canvas, no landscape canvas, no excessive empty whitespace, no inset photo, no inner rectangle, no border, no frame, no screenshot-within-image.`;
+Maintain the same fixed vertical 9:16 portrait card format exactly.`);
           baseGeneratedImage = ''; // Reset for next iteration
         }
       }
@@ -361,8 +367,8 @@ async function runReplicateFluxPulid(
         prompt: buildFluxPulidRunwayPrompt(runwayPrompt),
         negative_prompt:
           'wrong identity, different face, different person, changed face shape, changed hairstyle, changed skin tone, changed body type, wrong outfit, changed garment colors, changed garment pattern, missing garment, bad quality, worst quality, text, signature, watermark, extra limbs, deformed hands, deformed eyes, cross-eyed, blurry, low resolution',
-        width: 896,
-        height: 1152,
+        width: 864,
+        height: 1536,
         num_steps: 20,
         start_step: 0,
         guidance_scale: 4,
@@ -389,6 +395,8 @@ async function runReplicateFluxPulid(
 
 function buildFluxPulidRunwayPrompt(runwayPrompt: string) {
   return `${runwayPrompt}
+
+${RUNWAY_CARD_FORMAT_PROMPT}
 
 Use the provided main_face_image as the exact face identity reference. Generate one vertical 9:16 full-body neutral white studio runway photograph of the same person wearing the described outfit. The person must stand centered on a clean white round pedestal inside a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow. Use a stylish outfit-aware fashion pose that suits the clothing, not a stiff passport-photo stance, while preserving exact body proportions and full garment visibility. Preserve the face identity, natural skin texture, body type, hair, complexion, full outfit visibility, garment colors, garment cuts, and garment patterns. Do not create a portrait crop; show the complete body and outfit from head to toe with feet visible. Do not create an inset photo, inner rectangle, border, frame, poster, print, or screenshot-within-image.`.slice(0, 2800);
 }

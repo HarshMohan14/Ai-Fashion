@@ -684,7 +684,7 @@ function LookCard({
   onDelete: () => void;
   onZoom: () => void;
 }) {
-  const aspect = look.status === 'approved' ? 'aspect-[3/5]' : 'aspect-[4/5]';
+  const aspect = 'aspect-[9/16]';
   const modelName = model?.nickname;
   const modelThumb = model?.composite_url || model?.primary_photo_url;
   return (
@@ -697,7 +697,7 @@ function LookCard({
       className="break-inside-avoid bento p-0 overflow-hidden group"
     >
       <div className={`relative ${aspect} overflow-hidden bg-white`}>
-        <img src={look.image_url} alt={modelName || 'look'} referrerPolicy="no-referrer" className="w-full h-full object-cover transition duration-700 group-hover:scale-[1.03]" loading="lazy" />
+        <img src={look.image_url} alt={modelName || 'look'} referrerPolicy="no-referrer" className="w-full h-full object-contain" loading="lazy" />
 
         {modelThumb && (
           <div className="absolute bottom-3 right-3 w-16 h-20 rounded-lg overflow-hidden border-2 border-white shadow-boutique bg-white">

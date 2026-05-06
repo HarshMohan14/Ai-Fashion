@@ -192,6 +192,8 @@ export async function fetchDateOrDumpGameData() {
       .from('runway_looks')
       .select('id,image_url,theme,status,model_id,item_ids,item_snapshot,prompt,created_at,date_count,dump_count,style_quotient_score')
       .eq('status', 'approved')
+      .not('image_url', 'is', null)
+      .neq('image_url', '')
       .order('created_at', { ascending: false })
       .limit(200),
     supabase
@@ -442,7 +444,7 @@ function normalizeLook(
 ): DateOrDumpGameLook | null {
   const imageUrl = normalizeImageUrl(look.image_url);
   const model = look.model_id ? modelsById.get(look.model_id) : undefined;
-  if (!look.id || !imageUrl || !look.model_id || !model) return null;
+  if (look.status !== 'approved' || !look.id || !imageUrl || !look.model_id || !model) return null;
   const dateCount = Number(look.date_count ?? 0);
   const dumpCount = Number(look.dump_count ?? 0);
   return {
