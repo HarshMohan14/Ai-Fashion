@@ -151,11 +151,9 @@ async function loadCanvasImage(source: string): Promise<HTMLImageElement> {
 }
 
 function detectSubjectBounds(ctx: CanvasRenderingContext2D, width: number, height: number) {
-  const sample = 4;
-  let minX = width;
-  let minY = height;
-  let maxX = 0;
-  let maxY = 0;
+  const sample = 3;
+  const xs: number[] = [];
+  const ys: number[] = [];
 
   const data = ctx.getImageData(0, 0, width, height).data;
   for (let y = 0; y < height; y += sample) {
@@ -166,30 +164,38 @@ function detectSubjectBounds(ctx: CanvasRenderingContext2D, width: number, heigh
       const b = data[index + 2];
       const maxChannel = Math.max(r, g, b);
       const minChannel = Math.min(r, g, b);
-      const darkness = 255 - maxChannel;
+      const brightness = (r + g + b) / 3;
       const saturation = maxChannel - minChannel;
-      const isNearWhiteStudio = r > 225 && g > 225 && b > 225 && saturation < 24;
-      const isLikelyBodyOrGarment = !isNearWhiteStudio && (darkness > 44 || saturation > 34);
+      const isNeutralStudioBackdrop = brightness > 185 && saturation < 30;
+      const isLikelyBodyOrGarment = !isNeutralStudioBackdrop && (brightness < 190 || saturation > 46);
       if (isLikelyBodyOrGarment) {
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x);
-        maxY = Math.max(maxY, y);
+        xs.push(x);
+        ys.push(y);
       }
     }
   }
 
+  if (xs.length < 40 || ys.length < 40) return { x: 0, y: 0, width, height };
+
+  xs.sort((a, b) => a - b);
+  ys.sort((a, b) => a - b);
+  const percentile = (values: number[], ratio: number) => values[Math.min(values.length - 1, Math.max(0, Math.floor(values.length * ratio)))] ?? 0;
+  const minX = percentile(xs, 0.01);
+  const maxX = percentile(xs, 0.99);
+  const minY = percentile(ys, 0.005);
+  const maxY = percentile(ys, 0.995);
+
   if (minX >= maxX || minY >= maxY) return { x: 0, y: 0, width, height };
   const subjectWidth = maxX - minX;
   const subjectHeight = maxY - minY;
-  const marginX = Math.floor(subjectWidth * 0.2);
-  const marginTop = Math.floor(subjectHeight * 0.08);
-  const marginBottom = Math.floor(subjectHeight * 0.16);
+  const marginX = Math.floor(Math.max(subjectWidth * 0.24, width * 0.035));
+  const marginTop = Math.floor(Math.max(subjectHeight * 0.1, height * 0.025));
+  const marginBottom = Math.floor(Math.max(subjectHeight * 0.18, height * 0.045));
   return {
     x: Math.max(0, minX - marginX),
     y: Math.max(0, minY - marginTop),
-    width: Math.min(width, subjectWidth + marginX * 2),
-    height: Math.min(height, subjectHeight + marginTop + marginBottom),
+    width: Math.min(width - Math.max(0, minX - marginX), subjectWidth + marginX * 2),
+    height: Math.min(height - Math.max(0, minY - marginTop), subjectHeight + marginTop + marginBottom),
   };
 }
 
@@ -234,13 +240,14 @@ async function normalizeRunwayImageForGameCard(source: string): Promise<string> 
   ctx.stroke();
   ctx.restore();
 
-  const maxWidth = canvas.width * 0.9;
-  const maxHeight = canvas.height * 0.86;
+  const maxWidth = canvas.width * 0.84;
+  const maxHeight = canvas.height * 0.82;
   const scale = Math.min(maxWidth / bounds.width, maxHeight / bounds.height);
   const drawWidth = bounds.width * scale;
   const drawHeight = bounds.height * scale;
   const drawX = (canvas.width - drawWidth) / 2;
-  const drawY = canvas.height * 0.055 + (maxHeight - drawHeight);
+  const targetBottomY = canvas.height * 0.905;
+  const drawY = targetBottomY - drawHeight;
 
   ctx.drawImage(
     sourceCanvas,
@@ -342,7 +349,7 @@ export function buildPrompt(
   if (styleContext) {
     parts.push(`User style context: ${styleContext}. Use this only to clarify garment coordination or outfit intent; never use it to change the person's identity, body, pose, or white studio background.`);
   }
-  parts.push('Output one vertical 9:16 full-length neutral studio fashion photograph. The model must be centered head-to-toe, feet visible, occupying about 85-90% of the image height with narrow side margins so the image fits portrait game cards consistently. The model must stand on a clean white round pedestal in a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow.');
+  parts.push('Output one vertical 9:16 full-length neutral studio fashion photograph. The model must be centered head-to-toe, feet visible, occupying about 85-90% of the image height with narrow side margins so the image fits portrait game cards consistently. The model must stand on a clean white round pedestal in a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow. Do not create a smaller photo, inset rectangle, border, frame, poster, or image-within-image inside the 9:16 canvas.');
   if (feedback) parts.push(`Revision: ${feedback}.`);
   return parts.join(' ');
 }
@@ -429,7 +436,7 @@ export async function generateLook(
     Crucial Directives:
     1. Identity: The person must remain exactly the same as the model references. Preserve face, jaw, eyes, nose, hair, skin tone, body mass, height impression, posture, proportions, and shoulder-to-waist structure.
     2. Compulsory body description: ${physicalDescription ? `${physicalDescription}. This body description is mandatory and higher priority than beauty/fashion assumptions. Match the same body mass, shoulder width, waist, torso, legs, posture, and proportions. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.` : 'Use the visual model references as the mandatory body source. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.'}
-    3. Canvas: Generate a vertical 9:16 portrait image, not square and not landscape. The model must be centered head-to-toe with the full body visible, feet visible, and narrow side margins. The model should occupy about 85-90% of the image height.
+    3. Canvas: Generate a vertical 9:16 portrait image, not square and not landscape. The model must be centered head-to-toe with the full body visible, feet visible, and narrow side margins. The model should occupy about 85-90% of the image height. The final image must fill the whole 9:16 canvas directly; do not place a smaller rectangular photo, inset frame, border, poster, print, or screenshot inside the canvas.
     4. Setting: Use a seamless clean white photo studio with a white round pedestal under the model's feet, soft diffused studio lighting, and a subtle floor shadow. No editorial scene, no props, no stylized environment, and no mood-driven transformation.
     5. Pose: Use a simple natural standing full-body pose on the pedestal that shows the complete outfit. Do not invent dramatic fashion poses.
     6. Garment Details: The final image generation model will NOT see the reference images. Describe the clothing references in exact visual detail: colors, patterns, fabric textures, cuts, lengths, and how they sit naturally on the same model.
@@ -450,7 +457,7 @@ synthesizedPrompt = `${synthesizedPrompt}
 
 MANDATORY MODEL BODY: ${physicalDescription ? `${physicalDescription}. This is compulsory. Keep this exact body type, body mass, proportions, posture, shoulder-to-waist structure, limbs, and height impression. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.` : 'Use the model reference images as the compulsory body source. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.'}
 
-MANDATORY RUNWAY CARD FORMAT: vertical 9:16 portrait, seamless white photo studio, soft diffused studio lighting, subtle floor shadow, one centered full-body model visible from head to toe with feet visible, standing on a clean white round pedestal, model occupying 85-90% of image height, narrow side margins, no square canvas, no landscape canvas, no wide empty whitespace.`;
+MANDATORY RUNWAY CARD FORMAT: vertical 9:16 portrait, seamless white photo studio, soft diffused studio lighting, subtle floor shadow, one centered full-body model visible from head to toe with feet visible, standing on a clean white round pedestal, model occupying 85-90% of image height, narrow side margins, no square canvas, no landscape canvas, no wide empty whitespace, no inset photo, no inner rectangle, no border, no frame, no screenshot-within-image.`;
   
   if (import.meta.env.DEV) {
     console.debug('[Dr. Stylist] Final Synthesized Prompt:', synthesizedPrompt);
