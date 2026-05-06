@@ -15,6 +15,7 @@ import {
   type ModelReferenceImage,
   type RagKnowledgeBaseFeedback,
 } from './ragKnowledgeBase';
+import { removeBackground } from '@imgly/background-removal';
 
 export type StylistModel = {
   id: string;
@@ -150,6 +151,85 @@ async function loadCanvasImage(source: string): Promise<HTMLImageElement> {
   });
 }
 
+function canvasToBlob(canvas: HTMLCanvasElement, type = 'image/png', quality?: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('Could not encode runway image canvas.'));
+    }, type, quality);
+  });
+}
+
+function loadBlobImage(blob: Blob): Promise<HTMLImageElement> {
+  const objectUrl = URL.createObjectURL(blob);
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Could not load foreground runway image.'));
+    };
+    img.src = objectUrl;
+  });
+}
+
+function detectAlphaBounds(ctx: CanvasRenderingContext2D, width: number, height: number) {
+  const sample = 2;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const data = ctx.getImageData(0, 0, width, height).data;
+  for (let y = 0; y < height; y += sample) {
+    for (let x = 0; x < width; x += sample) {
+      const alpha = data[(y * width + x) * 4 + 3];
+      if (alpha > 18) {
+        xs.push(x);
+        ys.push(y);
+      }
+    }
+  }
+
+  if (xs.length < 40 || ys.length < 40) return { x: 0, y: 0, width, height };
+  xs.sort((a, b) => a - b);
+  ys.sort((a, b) => a - b);
+  const percentile = (values: number[], ratio: number) => values[Math.min(values.length - 1, Math.max(0, Math.floor(values.length * ratio)))] ?? 0;
+  const minX = percentile(xs, 0.005);
+  const maxX = percentile(xs, 0.995);
+  const minY = percentile(ys, 0.002);
+  const maxY = percentile(ys, 0.998);
+  const subjectWidth = Math.max(1, maxX - minX);
+  const subjectHeight = Math.max(1, maxY - minY);
+  const marginX = Math.floor(subjectWidth * 0.08);
+  const marginTop = Math.floor(subjectHeight * 0.035);
+  const marginBottom = Math.floor(subjectHeight * 0.08);
+  const x = Math.max(0, minX - marginX);
+  const y = Math.max(0, minY - marginTop);
+  return {
+    x,
+    y,
+    width: Math.min(width - x, subjectWidth + marginX * 2),
+    height: Math.min(height - y, subjectHeight + marginTop + marginBottom),
+  };
+}
+
+async function extractRunwayForeground(sourceCanvas: HTMLCanvasElement) {
+  const sourceBlob = await canvasToBlob(sourceCanvas, 'image/png');
+  const foregroundBlob = await removeBackground(sourceBlob);
+  const foregroundImg = await loadBlobImage(foregroundBlob);
+  const foregroundCanvas = document.createElement('canvas');
+  foregroundCanvas.width = foregroundImg.naturalWidth;
+  foregroundCanvas.height = foregroundImg.naturalHeight;
+  const foregroundCtx = foregroundCanvas.getContext('2d', { willReadFrequently: true });
+  if (!foregroundCtx) throw new Error('Could not create runway foreground canvas.');
+  foregroundCtx.drawImage(foregroundImg, 0, 0);
+  return {
+    canvas: foregroundCanvas,
+    bounds: detectAlphaBounds(foregroundCtx, foregroundCanvas.width, foregroundCanvas.height),
+  };
+}
+
 function detectSubjectBounds(ctx: CanvasRenderingContext2D, width: number, height: number) {
   const sample = 3;
   const xs: number[] = [];
@@ -208,7 +288,16 @@ async function normalizeRunwayImageForGameCard(source: string): Promise<string> 
   if (!sourceCtx) return source;
   sourceCtx.drawImage(img, 0, 0);
 
-  const bounds = detectSubjectBounds(sourceCtx, sourceCanvas.width, sourceCanvas.height);
+  let subjectCanvas = sourceCanvas;
+  let bounds = detectSubjectBounds(sourceCtx, sourceCanvas.width, sourceCanvas.height);
+  try {
+    const foreground = await extractRunwayForeground(sourceCanvas);
+    subjectCanvas = foreground.canvas;
+    bounds = foreground.bounds;
+  } catch (error) {
+    console.warn('[Dr. Stylist] Foreground extraction failed during runway normalization; using heuristic crop.', error);
+  }
+
   const canvas = document.createElement('canvas');
   canvas.width = RUNWAY_CARD_WIDTH;
   canvas.height = RUNWAY_CARD_HEIGHT;
@@ -249,8 +338,10 @@ async function normalizeRunwayImageForGameCard(source: string): Promise<string> 
   const targetBottomY = canvas.height * 0.905;
   const drawY = targetBottomY - drawHeight;
 
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(
-    sourceCanvas,
+    subjectCanvas,
     bounds.x,
     bounds.y,
     bounds.width,
