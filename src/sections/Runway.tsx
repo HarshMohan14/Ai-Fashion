@@ -41,9 +41,21 @@ type BatchProgress = { running: boolean; current: number; total: number; current
 
 const RUNWAY_LOOK_COLUMNS =
   'id,image_url,theme,status,model_id,item_ids,feedback,mocked,model_used,prompt,created_at';
+const RUNWAY_RECENT_LIMIT = 40;
+const RUNWAY_APPROVED_LIMIT = 200;
 
 function isHostedPhotosheetUrl(url: string | null | undefined) {
   return /^https?:\/\//i.test(url?.trim() ?? '');
+}
+
+function mergeRunwayLooks(...groups: Array<GeneratedLook[] | null | undefined>) {
+  const byId = new Map<string, GeneratedLook>();
+  groups.flatMap((group) => group ?? []).forEach((look) => {
+    byId.set(look.id, look);
+  });
+  return [...byId.values()].sort((a, b) => (
+    new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  ));
 }
 
 export function Runway() {
@@ -77,11 +89,22 @@ export function Runway() {
         return stillAvailable.length > 0 ? stillAvailable : availableIds;
       });
       setItems(inputs.items);
-      const { data, error } = await supabase
-        .from('runway_looks')
-        .select(RUNWAY_LOOK_COLUMNS)
-        .order('created_at', { ascending: false })
-        .limit(20);
+      const [recentResult, approvedResult] = await Promise.all([
+        supabase
+          .from('runway_looks')
+          .select(RUNWAY_LOOK_COLUMNS)
+          .order('created_at', { ascending: false })
+          .limit(RUNWAY_RECENT_LIMIT),
+        supabase
+          .from('runway_looks')
+          .select(RUNWAY_LOOK_COLUMNS)
+          .eq('status', 'approved')
+          .not('image_url', 'is', null)
+          .neq('image_url', '')
+          .order('created_at', { ascending: false })
+          .limit(RUNWAY_APPROVED_LIMIT),
+      ]);
+      const error = recentResult.error ?? approvedResult.error;
       if (error) {
         push(
           'Dr. Stylist',
@@ -89,7 +112,11 @@ export function Runway() {
         );
         setLooks([]);
       } else {
-        setLooks(((data ?? []) as GeneratedLook[]).map((look) => hydrateLookSnapshot(look, inputs.items)));
+        const mergedLooks = mergeRunwayLooks(
+          recentResult.data as GeneratedLook[] | null,
+          approvedResult.data as GeneratedLook[] | null,
+        );
+        setLooks(mergedLooks.map((look) => hydrateLookSnapshot(look, inputs.items)));
       }
 
       const topwear = inputs.items.filter((i) => i.category?.toLowerCase() === 'topwear' || i.category?.toLowerCase() === 'indian wear');

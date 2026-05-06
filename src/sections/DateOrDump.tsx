@@ -11,7 +11,6 @@ import {
 } from 'lucide-react';
 import { useDirector } from '../context/DirectorContext';
 import {
-  applyDuelToLooks,
   buildDateOrDumpDeck,
   completeDateOrDumpSession,
   createDateOrDumpSession,
@@ -40,6 +39,17 @@ type DateOrDumpResultCardConfig = {
   alt: string;
 };
 
+function getPlayableModelsForLooks(
+  models: DateOrDumpModel[],
+  looks: DateOrDumpGameLook[],
+) {
+  const counts = new Map<string, number>();
+  looks.forEach((look) => counts.set(look.model_id, (counts.get(look.model_id) ?? 0) + 1));
+  return models
+    .map((model) => ({ ...model, runway_count: counts.get(model.id) ?? 0 }))
+    .filter((model) => model.runway_count >= 2);
+}
+
 const DATE_OR_DUMP_RESULT_CARD_LIST: DateOrDumpResultCardConfig[] = [
   { id: 'papa', src: '/date-or-dump/papa-ki-pari-picker.png', alt: 'Papa Ki Pari Picker result card' },
   { id: 'gym', src: '/date-or-dump/gym-bro-survivor.png', alt: 'Gym Bro Survivor result card' },
@@ -54,8 +64,6 @@ const DATE_OR_DUMP_RESULT_CARDS = DATE_OR_DUMP_RESULT_CARD_LIST.reduce(
 export function DateOrDump() {
   const anonymousPlayerId = useMemo(() => getDateOrDumpAnonymousPlayerId(), []);
   const [phase, setPhase] = useState<Phase>('loading');
-  const [looks, setLooks] = useState<DateOrDumpGameLook[]>([]);
-  const [models, setModels] = useState<DateOrDumpModel[]>([]);
   const [deck, setDeck] = useState<DateOrDumpDuel[]>([]);
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<DateOrDumpAnswer[]>([]);
@@ -96,9 +104,7 @@ export function DateOrDump() {
     setPhase('loading');
     setLoadError(null);
     try {
-      const data = await fetchDateOrDumpGameData();
-      setLooks(data.looks);
-      setModels(data.models);
+      await fetchDateOrDumpGameData();
       setBrokenLookIds(new Set());
       setPhase('landing');
     } catch (error) {
@@ -111,19 +117,6 @@ export function DateOrDump() {
   }, [push]);
 
   useEffect(() => { loadData(); }, [loadData]);
-
-  const playableLooks = useMemo(
-    () => looks.filter((look) => !brokenLookIds.has(look.id)),
-    [brokenLookIds, looks],
-  );
-
-  const playableModels = useMemo(() => {
-    const counts = new Map<string, number>();
-    playableLooks.forEach((look) => counts.set(look.model_id, (counts.get(look.model_id) ?? 0) + 1));
-    return models
-      .map((model) => ({ ...model, runway_count: counts.get(model.id) ?? 0 }))
-      .filter((model) => model.runway_count >= 2);
-  }, [models, playableLooks]);
 
   const current = deck[index];
 
@@ -138,16 +131,21 @@ export function DateOrDump() {
 
   const startGame = async () => {
     if (starting) return;
+    setStarting(true);
     void getAudio().resume();
     playSound('start');
-    const nextDeck = buildDateOrDumpDeck(playableLooks, playableModels, MAX_DUELS);
-    if (nextDeck.length === 0) {
-      push('Date or Dump', 'Need at least one model with two DFB-approved Runway looks.');
-      return;
-    }
-
-    setStarting(true);
     try {
+      const fresh = await fetchDateOrDumpGameData();
+      const freshPlayableLooks = fresh.looks.filter((look) => !brokenLookIds.has(look.id));
+      const freshPlayableModels = getPlayableModelsForLooks(fresh.models, freshPlayableLooks);
+      setBrokenLookIds(new Set());
+
+      const nextDeck = buildDateOrDumpDeck(freshPlayableLooks, freshPlayableModels, MAX_DUELS);
+      if (nextDeck.length === 0) {
+        push('Date or Dump', 'Need at least one model with two DFB-approved Runway looks.');
+        return;
+      }
+
       const nextSessionId = await createDateOrDumpSession({
         anonymousPlayerId,
         totalDuels: nextDeck.length,
@@ -255,7 +253,6 @@ export function DateOrDump() {
       setRoseSide(selectedRoseSide);
       recordRosePreferenceLocal(anonymousPlayerId, current, selectedRoseSide);
     }
-    setLooks((currentLooks) => applyDuelToLooks(currentLooks, winner.id, loser.id));
     playSound('pick');
 
     void recordDateOrDumpDuel({

@@ -3,6 +3,7 @@ import {
   generateGeminiContentWithRetry,
   renderLook,
   referenceToPart,
+  RUNWAY_CARD_FORMAT_PROMPT,
   toGeminiImagePart,
   type GeminiApiImagePart,
 } from './nanoBanana';
@@ -218,7 +219,7 @@ export function buildPrompt(
   if (styleContext) {
     parts.push(`User style context: ${styleContext}. Use this only to clarify garment coordination or outfit intent; never use it to change the person's identity, body, pose, or white studio background.`);
   }
-  parts.push('Output one vertical 9:16 full-length neutral studio fashion photograph. The model must be centered head-to-toe, feet visible, occupying about 85-90% of the image height with narrow side margins so the image fits portrait game cards consistently. The model must stand on a clean white round pedestal in a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow. Use a stylish outfit-aware fashion pose that suits the selected clothes, such as relaxed weight shift, one hand in pocket, subtle lean, confident shoulder angle, or natural accessory interaction; avoid a boring stiff straight passport-photo stance while preserving exact body proportions. Do not create a smaller photo, inset rectangle, border, frame, poster, or image-within-image inside the 9:16 canvas.');
+  parts.push(RUNWAY_CARD_FORMAT_PROMPT);
   if (feedback) parts.push(`Revision: ${feedback}.`);
   return parts.join(' ');
 }
@@ -305,7 +306,7 @@ export async function generateLook(
     Crucial Directives:
     1. Identity: The person must remain exactly the same as the model references. Preserve face, jaw, eyes, nose, hair, skin tone, body mass, height impression, posture, proportions, and shoulder-to-waist structure.
     2. Compulsory body description: ${physicalDescription ? `${physicalDescription}. This body description is mandatory and higher priority than beauty/fashion assumptions. Match the same body mass, shoulder width, waist, torso, legs, posture, and proportions. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.` : 'Use the visual model references as the mandatory body source. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.'}
-    3. Canvas: Generate a vertical 9:16 portrait image, not square and not landscape. The model must be centered head-to-toe with the full body visible, feet visible, and narrow side margins. The model should occupy about 85-90% of the image height. The final image must fill the whole 9:16 canvas directly; do not place a smaller rectangular photo, inset frame, border, poster, print, or screenshot inside the canvas.
+    3. Canvas and setting: ${RUNWAY_CARD_FORMAT_PROMPT}
     4. Setting: Use a seamless clean white photo studio with a white round pedestal under the model's feet, soft diffused studio lighting, and a subtle floor shadow. No editorial scene, no props, no stylized environment, and no mood-driven transformation.
     5. Pose: Use a stylish outfit-aware full-body fashion pose on the pedestal that shows the complete outfit. The pose should match the garment mood and feel visually interesting, such as relaxed weight shift, one hand in pocket, subtle lean, confident shoulder angle, or natural accessory interaction. Avoid boring stiff straight standing, but do not distort body proportions or hide garments.
     6. Garment Details: The final image generation model will NOT see the reference images. Describe the clothing references in exact visual detail: colors, patterns, fabric textures, cuts, lengths, and how they sit naturally on the same model.
@@ -315,7 +316,7 @@ export async function generateLook(
     Do not use markdown formatting, bullet points, or introductory text. Just output the final image generation prompt.`
   });
 
-  const geminiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { temperature: 0.7 } });
+  const geminiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { temperature: 0.35 } });
   const aiResult = await generateGeminiContentWithRetry(
     () => geminiModel.generateContent(parts),
     'Runway prompt synthesis',
@@ -326,7 +327,7 @@ export async function generateLook(
 
 MANDATORY MODEL BODY: ${physicalDescription ? `${physicalDescription}. This is compulsory. Keep this exact body type, body mass, proportions, posture, shoulder-to-waist structure, limbs, and height impression. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.` : 'Use the model reference images as the compulsory body source. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.'}
 
-MANDATORY RUNWAY CARD FORMAT: vertical 9:16 portrait, seamless white photo studio, soft diffused studio lighting, subtle floor shadow, one centered full-body model visible from head to toe with feet visible, standing on a clean white round pedestal, model occupying 85-90% of image height, narrow side margins, stylish outfit-aware pose, no stiff passport-photo stance, preserve exact body proportions, no square canvas, no landscape canvas, no wide empty whitespace, no inset photo, no inner rectangle, no border, no frame, no screenshot-within-image.`;
+MANDATORY RUNWAY CARD FORMAT: ${RUNWAY_CARD_FORMAT_PROMPT}`;
   
   if (import.meta.env.DEV) {
     console.debug('[Dr. Stylist] Final Synthesized Prompt:', synthesizedPrompt);

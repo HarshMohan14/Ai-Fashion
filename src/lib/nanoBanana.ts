@@ -127,6 +127,7 @@ type GeminiContentPart = GeminiApiImagePart | GeminiTextPart;
 type GeminiResponsePart = { inlineData?: { data?: string; mimeType?: string } };
 type FaceSwapProvider = 'replicate' | 'none';
 type ReplicateFaceModel = 'flux-pulid' | 'codeplugtech';
+type RunwayCardLayoutValidation = { ok: boolean; issues: string[] };
 
 export const RUNWAY_CARD_FORMAT_PROMPT = `FIXED RUNWAY CARD OUTPUT FORMAT: Generate the final image as a true vertical 9:16 portrait bitmap. The entire returned image must be this 9:16 studio card directly, not a square or landscape image and not a 9:16 page containing a smaller rectangular photo. Show one centered full-body model from head to toe with feet visible, standing on a clean white round pedestal in a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow. Keep narrow side margins and make the model plus pedestal fit naturally inside the 9:16 frame. Use a stylish outfit-aware fashion pose while preserving exact body proportions. No crop, no inset photo, no inner rectangle, no border, no frame, no poster, no screenshot-within-image.`;
 
@@ -241,7 +242,9 @@ export async function renderLook(input: LookRenderInput): Promise<LookRenderResu
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-image' });
     let attempts = 0;
-    const maxAttempts = 2; // Initial attempt + 1 redraw if flaws found
+    const maxAttempts = 3; // Initial attempt + one layout redraw + one garment redraw.
+    let layoutRedrawUsed = false;
+    let garmentRedrawUsed = false;
     let currentPrompt = withRunwayCardFormat(input.prompt);
 
     while (attempts < maxAttempts) {
@@ -273,6 +276,24 @@ export async function renderLook(input: LookRenderInput): Promise<LookRenderResu
         throw new Error('Gemini model did not return inlineData.');
       }
 
+      const layoutValidation = await validateRunwayCardLayout(baseGeneratedImage);
+      if (!layoutValidation.ok) {
+        if (!layoutRedrawUsed && attempts < maxAttempts) {
+          layoutRedrawUsed = true;
+          if (import.meta.env.DEV) {
+            console.warn('[Dr. Stylist] Image failed fixed card layout validation. Redrawing...', layoutValidation.issues);
+          }
+          currentPrompt = withRunwayCardFormat(`${input.prompt}
+
+CRITICAL LAYOUT CORRECTION BASED ON PREVIOUS FAILED ATTEMPT:
+The previous image failed because: ${layoutValidation.issues.join('; ')}.
+Regenerate as one direct 9:16 portrait studio image. Do not place the model inside a smaller rectangular photo, white page, poster, frame, border, or screenshot. The model and white round pedestal must fill the 9:16 card naturally with head and feet visible.`);
+          baseGeneratedImage = '';
+          continue;
+        }
+        throw new Error(`Generated runway image failed fixed 9:16 card validation: ${layoutValidation.issues.join('; ')}`);
+      }
+
       if (attempts < maxAttempts && referenceParts.length > 0) {
         if (import.meta.env.DEV) console.log(`[Dr. Stylist] Critiquing attempt ${attempts}...`);
         const criticModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
@@ -289,8 +310,9 @@ export async function renderLook(input: LookRenderInput): Promise<LookRenderResu
         if (critiqueIsPerfect(garmentCritiqueText)) {
           if (import.meta.env.DEV) console.log('[Dr. Stylist] Image passed critique. Proceeding.');
           break;
-        } else {
-          if (import.meta.env.DEV) console.log('[Dr. Stylist] Image failed critique. Redrawing...');
+        } else if (!garmentRedrawUsed) {
+          garmentRedrawUsed = true;
+          if (import.meta.env.DEV) console.log('[Dr. Stylist] Image failed garment critique. Redrawing...');
           currentPrompt = withRunwayCardFormat(`${input.prompt}
 
 CRITICAL CORRECTIONS BASED ON PREVIOUS FAILED ATTEMPT:
@@ -298,6 +320,10 @@ Garment flaws to fix: ${garmentFlaws || 'No garment flaws reported.'}
 Keep the background neutral white, preserve every selected garment, and keep the model references available only for consistency.
 Maintain the same fixed vertical 9:16 portrait card format exactly.`);
           baseGeneratedImage = ''; // Reset for next iteration
+          continue;
+        } else {
+          if (import.meta.env.DEV) console.warn('[Dr. Stylist] Garment redraw already used. Proceeding with latest valid layout image.');
+          break;
         }
       }
     }
@@ -498,6 +524,110 @@ function critiqueIsPerfect(text: string) {
 function parseCritiqueFlaws(text: string) {
   if (critiqueIsPerfect(text)) return '';
   return text.replace(/^FLAWS:\s*/i, '').trim();
+}
+
+async function validateRunwayCardLayout(dataUrl: string): Promise<RunwayCardLayoutValidation> {
+  if (typeof document === 'undefined') return { ok: true, issues: [] };
+
+  const issues: string[] = [];
+  const image = await loadImage(dataUrl);
+  const naturalWidth = image.naturalWidth || image.width;
+  const naturalHeight = image.naturalHeight || image.height;
+  if (!naturalWidth || !naturalHeight) {
+    return { ok: false, issues: ['image dimensions could not be read'] };
+  }
+
+  const aspect = naturalWidth / naturalHeight;
+  const targetAspect = 9 / 16;
+  if (Math.abs(aspect - targetAspect) > 0.055) {
+    issues.push(`image is not close to 9:16 (${naturalWidth}x${naturalHeight})`);
+  }
+
+  const sampleHeight = 640;
+  const sampleWidth = Math.max(1, Math.round(sampleHeight * aspect));
+  const canvas = document.createElement('canvas');
+  canvas.width = sampleWidth;
+  canvas.height = sampleHeight;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return { ok: issues.length === 0, issues };
+
+  ctx.drawImage(image, 0, 0, sampleWidth, sampleHeight);
+  const pixels = ctx.getImageData(0, 0, sampleWidth, sampleHeight).data;
+  const subjectXs: number[] = [];
+  const subjectYs: number[] = [];
+  const contentXs: number[] = [];
+  const contentYs: number[] = [];
+  const stride = 2;
+
+  for (let y = 0; y < sampleHeight; y += stride) {
+    for (let x = 0; x < sampleWidth; x += stride) {
+      const offset = (y * sampleWidth + x) * 4;
+      const r = pixels[offset];
+      const g = pixels[offset + 1];
+      const b = pixels[offset + 2];
+      const a = pixels[offset + 3];
+      if (a < 20) continue;
+
+      const maxChannel = Math.max(r, g, b);
+      const minChannel = Math.min(r, g, b);
+      const saturation = maxChannel - minChannel;
+      const brightness = (r + g + b) / 3;
+      const isSubject = saturation > 28 || brightness < 215;
+      const isContent = saturation > 8 || brightness < 248;
+
+      if (isSubject) {
+        subjectXs.push(x);
+        subjectYs.push(y);
+      }
+      if (isContent) {
+        contentXs.push(x);
+        contentYs.push(y);
+      }
+    }
+  }
+
+  const percentile = (values: number[], ratio: number) => {
+    if (values.length === 0) return 0;
+    values.sort((a, b) => a - b);
+    return values[Math.min(values.length - 1, Math.max(0, Math.floor(values.length * ratio)))] ?? 0;
+  };
+
+  if (subjectXs.length < 80 || subjectYs.length < 80) {
+    issues.push('full-body model could not be detected clearly');
+  } else {
+    const subjectTop = percentile(subjectYs, 0.005);
+    const subjectBottom = percentile(subjectYs, 0.995);
+    const subjectHeightRatio = (subjectBottom - subjectTop) / sampleHeight;
+    const subjectTopRatio = subjectTop / sampleHeight;
+    const subjectBottomRatio = subjectBottom / sampleHeight;
+
+    if (subjectHeightRatio < 0.5) issues.push('model appears too small inside the card');
+    if (subjectTopRatio > 0.2) issues.push('too much empty space above the model');
+    if (subjectBottomRatio < 0.78) issues.push('model/pedestal does not reach the lower studio area');
+
+    if (contentXs.length >= 80 && contentYs.length >= 80) {
+      const contentLeft = percentile(contentXs, 0.01);
+      const contentRight = percentile(contentXs, 0.99);
+      const contentTop = percentile(contentYs, 0.01);
+      const contentBottom = percentile(contentYs, 0.99);
+      const contentWidthRatio = (contentRight - contentLeft) / sampleWidth;
+      const contentHeightRatio = (contentBottom - contentTop) / sampleHeight;
+      const contentIsInset =
+        contentLeft / sampleWidth > 0.055
+        && contentRight / sampleWidth < 0.945
+        && contentTop / sampleHeight > 0.055
+        && contentBottom / sampleHeight < 0.965
+        && contentWidthRatio > 0.42
+        && contentHeightRatio > 0.45
+        && contentHeightRatio > subjectHeightRatio * 1.15;
+
+      if (contentIsInset) {
+        issues.push('image appears to contain an inset photo or inner rectangular frame');
+      }
+    }
+  }
+
+  return { ok: issues.length === 0, issues };
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {
