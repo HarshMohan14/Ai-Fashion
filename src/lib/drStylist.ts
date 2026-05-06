@@ -15,7 +15,6 @@ import {
   type ModelReferenceImage,
   type RagKnowledgeBaseFeedback,
 } from './ragKnowledgeBase';
-import { removeBackground } from '@imgly/background-removal';
 
 export type StylistModel = {
   id: string;
@@ -111,9 +110,6 @@ function isHostedPhotosheetUrl(url: string | null | undefined): url is string {
   return /^https?:\/\//i.test(url?.trim() ?? '');
 }
 
-const RUNWAY_CARD_WIDTH = 1080;
-const RUNWAY_CARD_HEIGHT = 1920;
-
 function dataUrlToBlob(dataUrl: string): Blob {
   const [meta, data] = dataUrl.split(',');
   const mime = meta.match(/data:([^;]+)/)?.[1] ?? 'image/png';
@@ -123,241 +119,23 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([bytes], { type: mime });
 }
 
-async function loadCanvasImage(source: string): Promise<HTMLImageElement> {
-  let objectUrl = '';
-  const imgSource = source.startsWith('data:')
-    ? source
-    : await fetch(source)
-      .then((response) => {
-        if (!response.ok) throw new Error(`Could not fetch generated runway image (${response.status}).`);
-        return response.blob();
-      })
-      .then((blob) => {
-        objectUrl = URL.createObjectURL(blob);
-        return objectUrl;
-      });
-
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-      resolve(img);
-    };
-    img.onerror = () => {
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-      reject(new Error('Could not load generated runway image for card normalization.'));
-    };
-    img.src = imgSource;
-  });
-}
-
-function canvasToBlob(canvas: HTMLCanvasElement, type = 'image/png', quality?: number): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error('Could not encode runway image canvas.'));
-    }, type, quality);
-  });
-}
-
-function loadBlobImage(blob: Blob): Promise<HTMLImageElement> {
-  const objectUrl = URL.createObjectURL(blob);
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(objectUrl);
-      resolve(img);
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error('Could not load foreground runway image.'));
-    };
-    img.src = objectUrl;
-  });
-}
-
-function detectAlphaBounds(ctx: CanvasRenderingContext2D, width: number, height: number) {
-  const sample = 2;
-  const xs: number[] = [];
-  const ys: number[] = [];
-  const data = ctx.getImageData(0, 0, width, height).data;
-  for (let y = 0; y < height; y += sample) {
-    for (let x = 0; x < width; x += sample) {
-      const alpha = data[(y * width + x) * 4 + 3];
-      if (alpha > 18) {
-        xs.push(x);
-        ys.push(y);
-      }
-    }
-  }
-
-  if (xs.length < 40 || ys.length < 40) return { x: 0, y: 0, width, height };
-  xs.sort((a, b) => a - b);
-  ys.sort((a, b) => a - b);
-  const percentile = (values: number[], ratio: number) => values[Math.min(values.length - 1, Math.max(0, Math.floor(values.length * ratio)))] ?? 0;
-  const minX = percentile(xs, 0.005);
-  const maxX = percentile(xs, 0.995);
-  const minY = percentile(ys, 0.002);
-  const maxY = percentile(ys, 0.998);
-  const subjectWidth = Math.max(1, maxX - minX);
-  const subjectHeight = Math.max(1, maxY - minY);
-  const marginX = Math.floor(subjectWidth * 0.08);
-  const marginTop = Math.floor(subjectHeight * 0.035);
-  const marginBottom = Math.floor(subjectHeight * 0.08);
-  const x = Math.max(0, minX - marginX);
-  const y = Math.max(0, minY - marginTop);
-  return {
-    x,
-    y,
-    width: Math.min(width - x, subjectWidth + marginX * 2),
-    height: Math.min(height - y, subjectHeight + marginTop + marginBottom),
-  };
-}
-
-async function extractRunwayForeground(sourceCanvas: HTMLCanvasElement) {
-  const sourceBlob = await canvasToBlob(sourceCanvas, 'image/png');
-  const foregroundBlob = await removeBackground(sourceBlob);
-  const foregroundImg = await loadBlobImage(foregroundBlob);
-  const foregroundCanvas = document.createElement('canvas');
-  foregroundCanvas.width = foregroundImg.naturalWidth;
-  foregroundCanvas.height = foregroundImg.naturalHeight;
-  const foregroundCtx = foregroundCanvas.getContext('2d', { willReadFrequently: true });
-  if (!foregroundCtx) throw new Error('Could not create runway foreground canvas.');
-  foregroundCtx.drawImage(foregroundImg, 0, 0);
-  return {
-    canvas: foregroundCanvas,
-    bounds: detectAlphaBounds(foregroundCtx, foregroundCanvas.width, foregroundCanvas.height),
-  };
-}
-
-function detectSubjectBounds(ctx: CanvasRenderingContext2D, width: number, height: number) {
-  const sample = 3;
-  const xs: number[] = [];
-  const ys: number[] = [];
-
-  const data = ctx.getImageData(0, 0, width, height).data;
-  for (let y = 0; y < height; y += sample) {
-    for (let x = 0; x < width; x += sample) {
-      const index = (y * width + x) * 4;
-      const r = data[index];
-      const g = data[index + 1];
-      const b = data[index + 2];
-      const maxChannel = Math.max(r, g, b);
-      const minChannel = Math.min(r, g, b);
-      const brightness = (r + g + b) / 3;
-      const saturation = maxChannel - minChannel;
-      const isNeutralStudioBackdrop = brightness > 185 && saturation < 30;
-      const isLikelyBodyOrGarment = !isNeutralStudioBackdrop && (brightness < 190 || saturation > 46);
-      if (isLikelyBodyOrGarment) {
-        xs.push(x);
-        ys.push(y);
-      }
-    }
-  }
-
-  if (xs.length < 40 || ys.length < 40) return { x: 0, y: 0, width, height };
-
-  xs.sort((a, b) => a - b);
-  ys.sort((a, b) => a - b);
-  const percentile = (values: number[], ratio: number) => values[Math.min(values.length - 1, Math.max(0, Math.floor(values.length * ratio)))] ?? 0;
-  const minX = percentile(xs, 0.01);
-  const maxX = percentile(xs, 0.99);
-  const minY = percentile(ys, 0.005);
-  const maxY = percentile(ys, 0.995);
-
-  if (minX >= maxX || minY >= maxY) return { x: 0, y: 0, width, height };
-  const subjectWidth = maxX - minX;
-  const subjectHeight = maxY - minY;
-  const marginX = Math.floor(Math.max(subjectWidth * 0.24, width * 0.035));
-  const marginTop = Math.floor(Math.max(subjectHeight * 0.1, height * 0.025));
-  const marginBottom = Math.floor(Math.max(subjectHeight * 0.18, height * 0.045));
-  return {
-    x: Math.max(0, minX - marginX),
-    y: Math.max(0, minY - marginTop),
-    width: Math.min(width - Math.max(0, minX - marginX), subjectWidth + marginX * 2),
-    height: Math.min(height - Math.max(0, minY - marginTop), subjectHeight + marginTop + marginBottom),
-  };
-}
-
-async function normalizeRunwayImageForGameCard(source: string): Promise<string> {
-  const img = await loadCanvasImage(source);
-  const sourceCanvas = document.createElement('canvas');
-  sourceCanvas.width = img.naturalWidth;
-  sourceCanvas.height = img.naturalHeight;
-  const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
-  if (!sourceCtx) return source;
-  sourceCtx.drawImage(img, 0, 0);
-
-  let subjectCanvas = sourceCanvas;
-  let bounds = detectSubjectBounds(sourceCtx, sourceCanvas.width, sourceCanvas.height);
-  try {
-    const foreground = await extractRunwayForeground(sourceCanvas);
-    subjectCanvas = foreground.canvas;
-    bounds = foreground.bounds;
-  } catch (error) {
-    console.warn('[Dr. Stylist] Foreground extraction failed during runway normalization; using heuristic crop.', error);
-  }
-
-  const canvas = document.createElement('canvas');
-  canvas.width = RUNWAY_CARD_WIDTH;
-  canvas.height = RUNWAY_CARD_HEIGHT;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return source;
-
-  const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  gradient.addColorStop(0, '#FFFFFF');
-  gradient.addColorStop(0.58, '#FFFFFF');
-  gradient.addColorStop(1, '#F5F5F5');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  ctx.save();
-  ctx.fillStyle = 'rgba(0,0,0,0.08)';
-  ctx.filter = 'blur(18px)';
-  ctx.beginPath();
-  ctx.ellipse(canvas.width / 2, canvas.height * 0.905, canvas.width * 0.28, canvas.height * 0.035, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  ctx.save();
-  ctx.fillStyle = '#FFFFFF';
-  ctx.strokeStyle = 'rgba(0,0,0,0.1)';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.ellipse(canvas.width / 2, canvas.height * 0.885, canvas.width * 0.31, canvas.height * 0.045, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-  ctx.restore();
-
-  const maxWidth = canvas.width * 0.84;
-  const maxHeight = canvas.height * 0.82;
-  const scale = Math.min(maxWidth / bounds.width, maxHeight / bounds.height);
-  const drawWidth = bounds.width * scale;
-  const drawHeight = bounds.height * scale;
-  const drawX = (canvas.width - drawWidth) / 2;
-  const targetBottomY = canvas.height * 0.905;
-  const drawY = targetBottomY - drawHeight;
-
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(
-    subjectCanvas,
-    bounds.x,
-    bounds.y,
-    bounds.width,
-    bounds.height,
-    drawX,
-    drawY,
-    drawWidth,
-    drawHeight,
-  );
-
-  return canvas.toDataURL('image/jpeg', 0.92);
-}
-
 async function uploadRunwayDataUrl(dataUrl: string, modelId: string) {
   const blob = dataUrlToBlob(dataUrl);
   const fileName = `runway/${modelId}/${Date.now()}.jpg`;
+  const { error } = await supabase.storage
+    .from('model-photosheets')
+    .upload(fileName, blob, { contentType: blob.type || 'image/jpeg', upsert: true });
+  if (error) throw error;
+  const { data } = supabase.storage.from('model-photosheets').getPublicUrl(fileName);
+  return data.publicUrl;
+}
+
+async function uploadRunwayHostedUrl(url: string, modelId: string) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Could not fetch runway image (${response.status}).`);
+  const blob = await response.blob();
+  const fileExt = blob.type.split('/')[1] || 'jpg';
+  const fileName = `runway/${modelId}/${Date.now()}.${fileExt}`;
   const { error } = await supabase.storage
     .from('model-photosheets')
     .upload(fileName, blob, { contentType: blob.type || 'image/jpeg', upsert: true });
@@ -440,7 +218,7 @@ export function buildPrompt(
   if (styleContext) {
     parts.push(`User style context: ${styleContext}. Use this only to clarify garment coordination or outfit intent; never use it to change the person's identity, body, pose, or white studio background.`);
   }
-  parts.push('Output one vertical 9:16 full-length neutral studio fashion photograph. The model must be centered head-to-toe, feet visible, occupying about 85-90% of the image height with narrow side margins so the image fits portrait game cards consistently. The model must stand on a clean white round pedestal in a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow. Do not create a smaller photo, inset rectangle, border, frame, poster, or image-within-image inside the 9:16 canvas.');
+  parts.push('Output one vertical 9:16 full-length neutral studio fashion photograph. The model must be centered head-to-toe, feet visible, occupying about 85-90% of the image height with narrow side margins so the image fits portrait game cards consistently. The model must stand on a clean white round pedestal in a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow. Use a stylish outfit-aware fashion pose that suits the selected clothes, such as relaxed weight shift, one hand in pocket, subtle lean, confident shoulder angle, or natural accessory interaction; avoid a boring stiff straight passport-photo stance while preserving exact body proportions. Do not create a smaller photo, inset rectangle, border, frame, poster, or image-within-image inside the 9:16 canvas.');
   if (feedback) parts.push(`Revision: ${feedback}.`);
   return parts.join(' ');
 }
@@ -529,7 +307,7 @@ export async function generateLook(
     2. Compulsory body description: ${physicalDescription ? `${physicalDescription}. This body description is mandatory and higher priority than beauty/fashion assumptions. Match the same body mass, shoulder width, waist, torso, legs, posture, and proportions. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.` : 'Use the visual model references as the mandatory body source. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.'}
     3. Canvas: Generate a vertical 9:16 portrait image, not square and not landscape. The model must be centered head-to-toe with the full body visible, feet visible, and narrow side margins. The model should occupy about 85-90% of the image height. The final image must fill the whole 9:16 canvas directly; do not place a smaller rectangular photo, inset frame, border, poster, print, or screenshot inside the canvas.
     4. Setting: Use a seamless clean white photo studio with a white round pedestal under the model's feet, soft diffused studio lighting, and a subtle floor shadow. No editorial scene, no props, no stylized environment, and no mood-driven transformation.
-    5. Pose: Use a simple natural standing full-body pose on the pedestal that shows the complete outfit. Do not invent dramatic fashion poses.
+    5. Pose: Use a stylish outfit-aware full-body fashion pose on the pedestal that shows the complete outfit. The pose should match the garment mood and feel visually interesting, such as relaxed weight shift, one hand in pocket, subtle lean, confident shoulder angle, or natural accessory interaction. Avoid boring stiff straight standing, but do not distort body proportions or hide garments.
     6. Garment Details: The final image generation model will NOT see the reference images. Describe the clothing references in exact visual detail: colors, patterns, fabric textures, cuts, lengths, and how they sit naturally on the same model.
     7. Photography: Raw realistic studio photograph, DSLR clarity, natural skin texture, visible pores, normal human imperfections, accurate hands and limbs, no 3D render, no CGI, no airbrushed plastic look.
     8. Style context: ${styleContext ? `${styleContext}. Use this only to clarify garment coordination or outfit intent; do not change identity, body, pose, pedestal, or background.` : 'No additional styling. Keep the output neutral and identity-first.'}
@@ -544,11 +322,11 @@ export async function generateLook(
   );
   let synthesizedPrompt = aiResult.response.text().trim();
   synthesizedPrompt = synthesizedPrompt.slice(0, 800);
-synthesizedPrompt = `${synthesizedPrompt}
+  synthesizedPrompt = `${synthesizedPrompt}
 
 MANDATORY MODEL BODY: ${physicalDescription ? `${physicalDescription}. This is compulsory. Keep this exact body type, body mass, proportions, posture, shoulder-to-waist structure, limbs, and height impression. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.` : 'Use the model reference images as the compulsory body source. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.'}
 
-MANDATORY RUNWAY CARD FORMAT: vertical 9:16 portrait, seamless white photo studio, soft diffused studio lighting, subtle floor shadow, one centered full-body model visible from head to toe with feet visible, standing on a clean white round pedestal, model occupying 85-90% of image height, narrow side margins, no square canvas, no landscape canvas, no wide empty whitespace, no inset photo, no inner rectangle, no border, no frame, no screenshot-within-image.`;
+MANDATORY RUNWAY CARD FORMAT: vertical 9:16 portrait, seamless white photo studio, soft diffused studio lighting, subtle floor shadow, one centered full-body model visible from head to toe with feet visible, standing on a clean white round pedestal, model occupying 85-90% of image height, narrow side margins, stylish outfit-aware pose, no stiff passport-photo stance, preserve exact body proportions, no square canvas, no landscape canvas, no wide empty whitespace, no inset photo, no inner rectangle, no border, no frame, no screenshot-within-image.`;
   
   if (import.meta.env.DEV) {
     console.debug('[Dr. Stylist] Final Synthesized Prompt:', synthesizedPrompt);
@@ -575,38 +353,15 @@ MANDATORY RUNWAY CARD FORMAT: vertical 9:16 portrait, seamless white photo studi
   const persistedSnapshot = snapshot.map(({ id, name, category }) => ({ id, name, image: '', category }));
   const itemIds = snapshot.map((s) => s.id);
 
-  // Normalize every Runway image into a game-card-friendly 9:16 full-body portrait
-  // before it is stored. This keeps Date or Dump cards consistent without unsafe UI zooms.
   let finalImageUrl = result.dataUrl;
   try {
-    const normalizedDataUrl = await normalizeRunwayImageForGameCard(finalImageUrl);
-    finalImageUrl = await uploadRunwayDataUrl(normalizedDataUrl, p.model.id);
-  } catch (err) {
-    console.warn('[Dr. Stylist] Failed to normalize/upload runway image, falling back to original provider output', err);
-    if (finalImageUrl.startsWith('http')) {
-      try {
-      const response = await fetch(finalImageUrl);
-      if (response.ok) {
-        const blob = await response.blob();
-        const fileExt = blob.type.split('/')[1] || 'jpg';
-        const fileName = `runway/${p.model.id}/${Date.now()}.${fileExt}`;
-        const { error: uploadError } = await supabase.storage
-          .from('model-photosheets')
-          .upload(fileName, blob, { contentType: blob.type, upsert: true });
-        
-        if (!uploadError) {
-          const { data: publicData } = supabase.storage
-            .from('model-photosheets')
-            .getPublicUrl(fileName);
-          finalImageUrl = publicData.publicUrl;
-        } else {
-          console.error('[Dr. Stylist] Supabase storage upload failed:', uploadError);
-        }
-      }
-      } catch (uploadErr) {
-        console.warn('[Dr. Stylist] Failed to fetch and upload runway look to Supabase, falling back to provider URL', uploadErr);
-      }
+    if (finalImageUrl.startsWith('data:')) {
+      finalImageUrl = await uploadRunwayDataUrl(finalImageUrl, p.model.id);
+    } else if (finalImageUrl.startsWith('http')) {
+      finalImageUrl = await uploadRunwayHostedUrl(finalImageUrl, p.model.id);
     }
+  } catch (err) {
+    console.warn('[Dr. Stylist] Failed to upload runway image to Supabase, falling back to provider output', err);
   }
 
   const { data, error } = await supabase
