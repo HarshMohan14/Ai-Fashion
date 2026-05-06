@@ -290,7 +290,7 @@ export async function renderLook(input: LookRenderInput): Promise<LookRenderResu
 CRITICAL CORRECTIONS BASED ON PREVIOUS FAILED ATTEMPT:
 Garment flaws to fix: ${garmentFlaws || 'No garment flaws reported.'}
 Keep the background neutral white, preserve every selected garment, and keep the model references available only for consistency.
-Maintain the same vertical 9:16 portrait card format: one centered full-body model, head-to-toe visible, feet visible, narrow side margins, no square canvas, no landscape canvas, and no excessive empty whitespace.`;
+Maintain the same vertical 9:16 portrait card format: one centered full-body model, head-to-toe visible, feet visible, standing on a clean white round pedestal in a seamless white photo studio with soft diffused lighting, narrow side margins, no square canvas, no landscape canvas, and no excessive empty whitespace.`;
           baseGeneratedImage = ''; // Reset for next iteration
         }
       }
@@ -390,7 +390,7 @@ async function runReplicateFluxPulid(
 function buildFluxPulidRunwayPrompt(runwayPrompt: string) {
   return `${runwayPrompt}
 
-Use the provided main_face_image as the exact face identity reference. Generate one full-body neutral white studio runway photograph of the same person wearing the described outfit. Preserve the face identity, natural skin texture, body type, hair, complexion, full outfit visibility, garment colors, garment cuts, and garment patterns. Do not create a portrait crop; show the complete body and outfit.`.slice(0, 2800);
+Use the provided main_face_image as the exact face identity reference. Generate one vertical 9:16 full-body neutral white studio runway photograph of the same person wearing the described outfit. The person must stand centered on a clean white round pedestal inside a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow. Preserve the face identity, natural skin texture, body type, hair, complexion, full outfit visibility, garment colors, garment cuts, and garment patterns. Do not create a portrait crop; show the complete body and outfit from head to toe with feet visible.`.slice(0, 2800);
 }
 
 async function runReplicateCodeplugtechFaceSwap(

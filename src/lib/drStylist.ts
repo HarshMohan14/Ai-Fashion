@@ -152,27 +152,6 @@ async function loadCanvasImage(source: string): Promise<HTMLImageElement> {
 
 function detectSubjectBounds(ctx: CanvasRenderingContext2D, width: number, height: number) {
   const sample = 4;
-  const cornerSize = Math.max(12, Math.floor(Math.min(width, height) * 0.06));
-  const cornerPixels = [
-    ...Array.from({ length: cornerSize }, (_, y) => [0, y] as const),
-    ...Array.from({ length: cornerSize }, (_, y) => [width - cornerSize, y] as const),
-    ...Array.from({ length: cornerSize }, (_, y) => [0, height - cornerSize + y] as const),
-    ...Array.from({ length: cornerSize }, (_, y) => [width - cornerSize, height - cornerSize + y] as const),
-  ];
-
-  let bgR = 0;
-  let bgG = 0;
-  let bgB = 0;
-  cornerPixels.forEach(([x, y]) => {
-    const pixel = ctx.getImageData(x, y, 1, 1).data;
-    bgR += pixel[0];
-    bgG += pixel[1];
-    bgB += pixel[2];
-  });
-  bgR /= cornerPixels.length;
-  bgG /= cornerPixels.length;
-  bgB /= cornerPixels.length;
-
   let minX = width;
   let minY = height;
   let maxX = 0;
@@ -185,9 +164,13 @@ function detectSubjectBounds(ctx: CanvasRenderingContext2D, width: number, heigh
       const r = data[index];
       const g = data[index + 1];
       const b = data[index + 2];
-      const distance = Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB);
-      const darkness = 255 - Math.max(r, g, b);
-      if (distance > 42 || darkness > 36) {
+      const maxChannel = Math.max(r, g, b);
+      const minChannel = Math.min(r, g, b);
+      const darkness = 255 - maxChannel;
+      const saturation = maxChannel - minChannel;
+      const isNearWhiteStudio = r > 225 && g > 225 && b > 225 && saturation < 24;
+      const isLikelyBodyOrGarment = !isNearWhiteStudio && (darkness > 44 || saturation > 34);
+      if (isLikelyBodyOrGarment) {
         minX = Math.min(minX, x);
         minY = Math.min(minY, y);
         maxX = Math.max(maxX, x);
@@ -197,13 +180,16 @@ function detectSubjectBounds(ctx: CanvasRenderingContext2D, width: number, heigh
   }
 
   if (minX >= maxX || minY >= maxY) return { x: 0, y: 0, width, height };
-  const marginX = Math.floor((maxX - minX) * 0.16);
-  const marginY = Math.floor((maxY - minY) * 0.09);
+  const subjectWidth = maxX - minX;
+  const subjectHeight = maxY - minY;
+  const marginX = Math.floor(subjectWidth * 0.2);
+  const marginTop = Math.floor(subjectHeight * 0.08);
+  const marginBottom = Math.floor(subjectHeight * 0.16);
   return {
     x: Math.max(0, minX - marginX),
-    y: Math.max(0, minY - marginY),
-    width: Math.min(width, maxX - minX + marginX * 2),
-    height: Math.min(height, maxY - minY + marginY * 2),
+    y: Math.max(0, minY - marginTop),
+    width: Math.min(width, subjectWidth + marginX * 2),
+    height: Math.min(height, subjectHeight + marginTop + marginBottom),
   };
 }
 
@@ -223,16 +209,38 @@ async function normalizeRunwayImageForGameCard(source: string): Promise<string> 
   const ctx = canvas.getContext('2d');
   if (!ctx) return source;
 
-  ctx.fillStyle = '#FFFFFF';
+  const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  gradient.addColorStop(0, '#FFFFFF');
+  gradient.addColorStop(0.58, '#FFFFFF');
+  gradient.addColorStop(1, '#F5F5F5');
+  ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  const maxWidth = canvas.width * 0.88;
-  const maxHeight = canvas.height * 0.9;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.08)';
+  ctx.filter = 'blur(18px)';
+  ctx.beginPath();
+  ctx.ellipse(canvas.width / 2, canvas.height * 0.905, canvas.width * 0.28, canvas.height * 0.035, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  ctx.fillStyle = '#FFFFFF';
+  ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(canvas.width / 2, canvas.height * 0.885, canvas.width * 0.31, canvas.height * 0.045, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+
+  const maxWidth = canvas.width * 0.9;
+  const maxHeight = canvas.height * 0.86;
   const scale = Math.min(maxWidth / bounds.width, maxHeight / bounds.height);
   const drawWidth = bounds.width * scale;
   const drawHeight = bounds.height * scale;
   const drawX = (canvas.width - drawWidth) / 2;
-  const drawY = canvas.height * 0.055 + (maxHeight - drawHeight) / 2;
+  const drawY = canvas.height * 0.055 + (maxHeight - drawHeight);
 
   ctx.drawImage(
     sourceCanvas,
@@ -311,10 +319,14 @@ export function buildPrompt(
 ): string {
   void seed;
   const styleContext = p.theme.trim();
+  const physicalDescription = p.model.physical_description?.trim();
   const parts: string[] = [];
   parts.push(
     "reference_image_1 is the uploaded 5-angle model photosheet and is the strict sole source for the person. Use the photosheet directly as the identity reference: preserve the same face, hair, skin tone, body proportions, height impression, posture, and body structure across the final image.",
   );
+  if (physicalDescription) {
+    parts.push(`COMPULSORY BODY DESCRIPTION FOR THIS MODEL: ${physicalDescription}. The generated model must match this body description exactly. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the body.`);
+  }
   parts.push(
     "Dress the same subject in the garments shown in the remaining reference images exactly as they appear — preserve their design, color, pattern, and texture.",
   );
@@ -330,7 +342,7 @@ export function buildPrompt(
   if (styleContext) {
     parts.push(`User style context: ${styleContext}. Use this only to clarify garment coordination or outfit intent; never use it to change the person's identity, body, pose, or white studio background.`);
   }
-  parts.push('Output one vertical 9:16 full-length neutral studio fashion photograph. The model must be centered head-to-toe, feet visible, occupying about 85-90% of the image height with narrow side margins so the image fits portrait game cards consistently.');
+  parts.push('Output one vertical 9:16 full-length neutral studio fashion photograph. The model must be centered head-to-toe, feet visible, occupying about 85-90% of the image height with narrow side margins so the image fits portrait game cards consistently. The model must stand on a clean white round pedestal in a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow.');
   if (feedback) parts.push(`Revision: ${feedback}.`);
   return parts.join(' ');
 }
@@ -349,18 +361,19 @@ export async function generateLook(
   if (!key) {
     throw new Error('Missing VITE_GEMINI_API_KEY. Dr. Stylist needs Gemini to analyze references and generate runway images.');
   }
+  const physicalDescription = p.model.physical_description?.trim();
 
   const modelUrls: string[] = [];
   const modelLabels: string[] = [];
 
   if (p.model.photos?.closeup) { modelUrls.push(p.model.photos.closeup); modelLabels.push("Face Closeup: This is the STRICT facial identity source. Preserve exact facial features, jawline, and eyes."); }
-  if (p.model.photos?.front) { modelUrls.push(p.model.photos.front); modelLabels.push("Front View: Use for core body structure and front proportions."); }
-  if (p.model.photos?.side) { modelUrls.push(p.model.photos.side); modelLabels.push("Side View: Use for posture and depth."); }
-  if (p.model.photos?.back) { modelUrls.push(p.model.photos.back); modelLabels.push("Back View: Use for back profile consistency."); }
+  if (p.model.photos?.front) { modelUrls.push(p.model.photos.front); modelLabels.push(`Front View: Use for core body structure and front proportions.${physicalDescription ? ` Compulsory body description: ${physicalDescription}.` : ''}`); }
+  if (p.model.photos?.side) { modelUrls.push(p.model.photos.side); modelLabels.push(`Side View: Use for posture, depth, and body thickness.${physicalDescription ? ` Compulsory body description: ${physicalDescription}.` : ''}`); }
+  if (p.model.photos?.back) { modelUrls.push(p.model.photos.back); modelLabels.push(`Back View: Use for back profile consistency.${physicalDescription ? ` Compulsory body description: ${physicalDescription}.` : ''}`); }
   
   if (modelUrls.length === 0 && p.model.composite_url) {
     modelUrls.push(p.model.composite_url);
-    modelLabels.push("Model Photosheet: This is the ONLY identity source — keep the exact face, skin tone, hair, height, and body proportions.");
+    modelLabels.push(`Model Photosheet: This is the ONLY identity source - keep the exact face, skin tone, hair, height, and body proportions.${physicalDescription ? ` Compulsory body description: ${physicalDescription}.` : ''}`);
   }
 
   if (p.model.active_reference_image) {
@@ -415,13 +428,13 @@ export async function generateLook(
     text: `Write a continuous, photorealistic image generation prompt describing this exact person wearing these exact clothes.
     Crucial Directives:
     1. Identity: The person must remain exactly the same as the model references. Preserve face, jaw, eyes, nose, hair, skin tone, body mass, height impression, posture, proportions, and shoulder-to-waist structure.
-    2. Canvas: Generate a vertical 9:16 portrait image, not square and not landscape. The model must be centered head-to-toe with the full body visible, feet visible, and narrow side margins. The model should occupy about 85-90% of the image height.
-    3. Setting: Use a clean white studio background with no editorial scene, no props, no stylized environment, and no mood-driven transformation.
-    4. Pose: Use a simple natural standing full-body pose that shows the complete outfit. Do not invent dramatic fashion poses.
-    5. Garment Details: The final image generation model will NOT see the reference images. Describe the clothing references in exact visual detail: colors, patterns, fabric textures, cuts, lengths, and how they sit naturally on the same model.
-    6. Photography: Raw realistic studio photograph, DSLR clarity, natural skin texture, visible pores, normal human imperfections, accurate hands and limbs, no 3D render, no CGI, no airbrushed plastic look.
-    7. Style context: ${styleContext ? `${styleContext}. Use this only to clarify garment coordination or outfit intent; do not change identity, body, pose, or background.` : 'No additional styling. Keep the output neutral and identity-first.'}
-    ${p.model.physical_description ? `8. Physical authenticity: ${p.model.physical_description}. Do not slim, beautify, age-shift, reshape, or idealize the model.` : ''}
+    2. Compulsory body description: ${physicalDescription ? `${physicalDescription}. This body description is mandatory and higher priority than beauty/fashion assumptions. Match the same body mass, shoulder width, waist, torso, legs, posture, and proportions. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.` : 'Use the visual model references as the mandatory body source. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.'}
+    3. Canvas: Generate a vertical 9:16 portrait image, not square and not landscape. The model must be centered head-to-toe with the full body visible, feet visible, and narrow side margins. The model should occupy about 85-90% of the image height.
+    4. Setting: Use a seamless clean white photo studio with a white round pedestal under the model's feet, soft diffused studio lighting, and a subtle floor shadow. No editorial scene, no props, no stylized environment, and no mood-driven transformation.
+    5. Pose: Use a simple natural standing full-body pose on the pedestal that shows the complete outfit. Do not invent dramatic fashion poses.
+    6. Garment Details: The final image generation model will NOT see the reference images. Describe the clothing references in exact visual detail: colors, patterns, fabric textures, cuts, lengths, and how they sit naturally on the same model.
+    7. Photography: Raw realistic studio photograph, DSLR clarity, natural skin texture, visible pores, normal human imperfections, accurate hands and limbs, no 3D render, no CGI, no airbrushed plastic look.
+    8. Style context: ${styleContext ? `${styleContext}. Use this only to clarify garment coordination or outfit intent; do not change identity, body, pose, pedestal, or background.` : 'No additional styling. Keep the output neutral and identity-first.'}
     ${ragKnowledgeText ? `9. rag_knowledge_base feedback for this model, grouped by Face, Body, Style, Hair, and Complexion:\n${ragKnowledgeText}\nApply these corrections for consistency.` : ''}
     Do not use markdown formatting, bullet points, or introductory text. Just output the final image generation prompt.`
   });
@@ -433,9 +446,11 @@ export async function generateLook(
   );
   let synthesizedPrompt = aiResult.response.text().trim();
   synthesizedPrompt = synthesizedPrompt.slice(0, 800);
-  synthesizedPrompt = `${synthesizedPrompt}
+synthesizedPrompt = `${synthesizedPrompt}
 
-MANDATORY RUNWAY CARD FORMAT: vertical 9:16 portrait, clean white studio background, one centered full-body model visible from head to toe with feet visible, narrow side margins, no square canvas, no landscape canvas, no wide empty whitespace.`;
+MANDATORY MODEL BODY: ${physicalDescription ? `${physicalDescription}. This is compulsory. Keep this exact body type, body mass, proportions, posture, shoulder-to-waist structure, limbs, and height impression. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.` : 'Use the model reference images as the compulsory body source. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.'}
+
+MANDATORY RUNWAY CARD FORMAT: vertical 9:16 portrait, seamless white photo studio, soft diffused studio lighting, subtle floor shadow, one centered full-body model visible from head to toe with feet visible, standing on a clean white round pedestal, model occupying 85-90% of image height, narrow side margins, no square canvas, no landscape canvas, no wide empty whitespace.`;
   
   if (import.meta.env.DEV) {
     console.debug('[Dr. Stylist] Final Synthesized Prompt:', synthesizedPrompt);
