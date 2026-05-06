@@ -17,6 +17,8 @@ export function hasBananaKey() {
   return Boolean(import.meta.env.VITE_GEMINI_API_KEY);
 }
 
+const GEMINI_IMAGE_MODEL = 'gemini-3.1-flash-image-preview';
+
 function buildPrompt({ category, colorHex, fabric, extraInstructions }: ReRenderInput) {
   const base = `Generate a high-resolution, professional product shot of this exact ${category}. The item should be perfectly flat-laid or on a ghost mannequin, clean of wrinkles, centered on a pure #FFFFFF white background. Maintain the exact color: ${colorHex} and texture: ${fabric}. Do NOT invent patterns, logos, or details that aren't visible in the source. Output a single clean studio image.`;
   return extraInstructions ? `${base}\n\nAdditional: ${extraInstructions}` : base;
@@ -49,7 +51,7 @@ export async function reRenderItem(input: ReRenderInput): Promise<ReRenderResult
   const prompt = buildPrompt(input);
 
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-image' });
+    const model = genAI.getGenerativeModel({ model: GEMINI_IMAGE_MODEL });
     const result = await generateGeminiContentWithRetry(
       () => model.generateContent([
         { inlineData: inline },
@@ -62,7 +64,7 @@ export async function reRenderItem(input: ReRenderInput): Promise<ReRenderResult
       const img = (part as { inlineData?: { data?: string; mimeType?: string } }).inlineData;
       if (img?.data) {
         const mime = img.mimeType || 'image/png';
-        return { dataUrl: `data:${mime};base64,${img.data}`, model: 'gemini-2.5-flash-image' };
+        return { dataUrl: `data:${mime};base64,${img.data}`, model: GEMINI_IMAGE_MODEL };
       }
     }
   } catch (e) {
@@ -240,7 +242,7 @@ export async function renderLook(input: LookRenderInput): Promise<LookRenderResu
   const garmentReferenceParts = referenceParts.slice(modelReferenceCount);
 
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-image' });
+    const model = genAI.getGenerativeModel({ model: GEMINI_IMAGE_MODEL });
     let attempts = 0;
     const maxAttempts = 3; // Initial attempt + one layout redraw + one garment redraw.
     let layoutRedrawUsed = false;
@@ -267,7 +269,7 @@ export async function renderLook(input: LookRenderInput): Promise<LookRenderResu
         if (img?.data) {
           const mime = img.mimeType || 'image/jpeg';
           baseGeneratedImage = `data:${mime};base64,${img.data}`;
-          modelUsed = 'gemini-2.5-flash-image';
+          modelUsed = GEMINI_IMAGE_MODEL;
           break;
         }
       }

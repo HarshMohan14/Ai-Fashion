@@ -351,7 +351,7 @@ export function Runway() {
         <div className="flex items-center gap-2 mb-4">
           <Wand2 className="w-4 h-4 text-cobalt dark:text-indigo_electric" />
           <div className="font-medium">Generate batch</div>
-          <span className="chip ml-auto">Dr. Stylist · Nano Banana 2</span>
+          <span className="chip ml-auto">Dr. Stylist · Gemini 3.1 Flash Image</span>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">

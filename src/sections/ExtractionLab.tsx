@@ -850,6 +850,7 @@ function formatModelName(id: string): string {
     'gemini-2.0-flash': 'Gemini 2.0 Flash',
     'gemini-flash-latest': 'Gemini Flash',
     'gemini-2.5-flash-image': 'Gemini 2.5 (Nano Banana)',
+    'gemini-3.1-flash-image-preview': 'Gemini 3.1 Flash Image',
   };
   return map[id] ?? id;
 }
