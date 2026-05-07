@@ -508,11 +508,11 @@ function PlayingScreen({
         <div className="pointer-events-none absolute right-9 top-2 text-[#ff1493] drop-shadow-[0_0_14px_rgba(255,20,147,0.9)]">
           <Gem className="h-5 w-5 fill-current" />
         </div>
-        <h1 className="dfb-condensed text-[clamp(3.1rem,10vw,4.4rem)] uppercase italic leading-[0.76] tracking-[-0.045em]">
+        <h1 className="dfb-condensed text-[clamp(2.4rem,8vw,3.2rem)] uppercase italic leading-[0.76] tracking-[-0.045em]">
           <span className="text-white">Fit </span>
           <span className="text-[#ff1493]">Duel</span>
         </h1>
-        <div className="dfb-condensed -mt-0.5 flex items-center justify-center gap-2.5 text-[1.1rem] uppercase tracking-wide text-white/90">
+        <div className="dfb-condensed mt-0 flex items-center justify-center gap-2 text-[0.95rem] uppercase tracking-wide text-white/90">
           <span className="h-0.5 w-12 bg-[#ff1493]" />
           Round <span className="text-[#ff1493]">{currentRound}</span> of {totalRounds}
           <span className="h-0.5 w-12 bg-[#ff1493]" />
@@ -549,15 +549,15 @@ function PlayingScreen({
         </div>
       </div>
 
-      <div className="flex flex-col items-center gap-1.5 pb-1">
-        <div className="dfb-condensed rounded-full border-2 border-[#ffd600] px-6 py-1.5 text-xl uppercase italic tracking-wide text-[#ffd600]">
-          Choose Your Fit
+      <div className="flex flex-col items-center gap-1 pb-1">
+        <div className="dfb-condensed text-[1.28rem] uppercase italic tracking-widest text-[#ff1493]">
+          Pick Your Fit
         </div>
         <button
           type="button"
           onClick={onSkip}
           disabled={Boolean(selectedSide) || timedOut}
-          className="dfb-condensed text-sm uppercase text-white/60 underline decoration-white/35 underline-offset-4 transition hover:text-white disabled:opacity-40"
+          className="dfb-condensed text-sm uppercase text-white underline decoration-white/60 underline-offset-4 transition disabled:opacity-40"
         >
           Skip This Round
         </button>
@@ -588,6 +588,13 @@ function PlayingScreen({
   );
 }
 
+const RESULT_LOADING_TEXTS = [
+  "Wait babe, we're finding your type...",
+  "Getting the boys dressed...",
+  "You would be surprised...",
+  "Almost ready, just the nakhre...",
+];
+
 function ResultScreen({
   result,
   loading,
@@ -601,51 +608,94 @@ function ResultScreen({
   onPlayAgain: () => void;
   onShare: () => void;
 }) {
-  if (loading || !result) {
-    return (
-      <div className="grid flex-1 place-items-center text-center">
-        <div>
-          <Loader2 className="mx-auto mb-4 h-11 w-11 animate-spin text-[#ff1493]" />
-          <div className="mx-auto max-w-xs text-2xl font-black leading-tight text-white">
-            Wait babe, we&apos;re finding your type...
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const [textIndex, setTextIndex] = useState(0);
 
-  const card = DATE_OR_DUMP_RESULT_CARDS[pickDateOrDumpResultCard(result, answers)];
+  useEffect(() => {
+    if (!loading && result) return;
+    const timer = window.setInterval(() => {
+      setTextIndex((i) => (i + 1) % RESULT_LOADING_TEXTS.length);
+    }, 2600);
+    return () => window.clearInterval(timer);
+  }, [loading, result]);
 
   return (
     <div className="-mx-5 -my-5 relative flex min-h-[100dvh] flex-1 items-center justify-center overflow-hidden bg-black">
       <div className="relative aspect-[941/1672] w-full max-w-[430px]">
-        <motion.img
-          src={card.src}
-          alt={card.alt}
-          className="absolute inset-0 h-full w-full object-contain"
-          initial={{ opacity: 0, scale: 1.015 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.42, ease: 'easeOut' }}
-        />
-        <motion.div
-          className="pointer-events-none absolute inset-0 bg-[linear-gradient(115deg,transparent_0%,rgba(255,255,255,0.22)_44%,transparent_58%)]"
-          initial={{ x: '-130%' }}
-          animate={{ x: '130%' }}
-          transition={{ duration: 0.85, delay: 0.18, ease: 'easeInOut' }}
-        />
-        <button
-          type="button"
-          onClick={onShare}
-          aria-label="Share Date or Dump result"
-          className="absolute bottom-[8.8%] left-[13.5%] right-[13.5%] h-[6.8%] rounded-full focus:outline-none focus:ring-4 focus:ring-[#ffd600]/70"
-        />
-        <button
-          type="button"
-          onClick={onPlayAgain}
-          className="absolute bottom-[4.1%] left-1/2 -translate-x-1/2 rounded-full bg-black/55 px-5 py-1.5 text-sm font-black text-white/85 shadow-[0_0_18px_rgba(255,20,147,0.35)] backdrop-blur transition hover:text-white"
-        >
-          Play Again
-        </button>
+        <AnimatePresence mode="wait">
+          {loading || !result ? (
+            <motion.div
+              key="loading"
+              className="absolute inset-4 flex flex-col items-center justify-center overflow-hidden rounded-[30px] border-[3px] border-[#ff1493]/30 bg-[#ff1493]/10"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 1.05, filter: 'blur(12px)' }}
+              transition={{ duration: 0.6 }}
+            >
+              <motion.div
+                className="absolute inset-0 bg-[linear-gradient(45deg,transparent_25%,rgba(255,20,147,0.15)_50%,transparent_75%)] bg-[length:250%_250%]"
+                animate={{ backgroundPosition: ['0% 0%', '100% 100%'] }}
+                transition={{ duration: 2.5, repeat: Infinity, ease: 'linear' }}
+              />
+              <div className="relative z-10 flex w-full flex-col items-center justify-center px-6 text-center">
+                <Loader2 className="mb-6 h-12 w-12 animate-spin text-[#ff1493]" />
+                <div className="relative h-24 w-full">
+                  <AnimatePresence mode="wait">
+                    <motion.div
+                      key={textIndex}
+                      initial={{ y: 15, opacity: 0 }}
+                      animate={{ y: 0, opacity: 1 }}
+                      exit={{ y: -15, opacity: 0 }}
+                      transition={{ duration: 0.4 }}
+                      className="absolute inset-x-0 text-[1.4rem] font-black leading-tight text-white drop-shadow-[0_0_12px_rgba(255,20,147,0.5)]"
+                    >
+                      {RESULT_LOADING_TEXTS[textIndex]}
+                    </motion.div>
+                  </AnimatePresence>
+                </div>
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div
+              key="result"
+              className="absolute inset-0"
+              initial={{ opacity: 0, scale: 0.95, filter: 'blur(15px)' }}
+              animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+              transition={{ duration: 0.9, ease: 'easeOut' }}
+            >
+              {(() => {
+                const card = DATE_OR_DUMP_RESULT_CARDS[pickDateOrDumpResultCard(result, answers)];
+                return (
+                  <>
+                    <img
+                      src={card.src}
+                      alt={card.alt}
+                      className="absolute inset-0 h-full w-full object-contain"
+                    />
+                    <motion.div
+                      className="pointer-events-none absolute inset-0 bg-[linear-gradient(115deg,transparent_0%,rgba(255,255,255,0.22)_44%,transparent_58%)]"
+                      initial={{ x: '-130%' }}
+                      animate={{ x: '130%' }}
+                      transition={{ duration: 0.85, delay: 0.18, ease: 'easeInOut' }}
+                    />
+                    <button
+                      type="button"
+                      onClick={onShare}
+                      aria-label="Share Date or Dump result"
+                      className="absolute bottom-[8.8%] left-[13.5%] right-[13.5%] h-[6.8%] rounded-full focus:outline-none focus:ring-4 focus:ring-[#ffd600]/70"
+                    />
+                    <button
+                      type="button"
+                      onClick={onPlayAgain}
+                      className="absolute bottom-[4.1%] left-1/2 -translate-x-1/2 rounded-full bg-black/55 px-5 py-1.5 text-sm font-black text-white/85 shadow-[0_0_18px_rgba(255,20,147,0.35)] backdrop-blur transition hover:text-white"
+                    >
+                      Play Again
+                    </button>
+                  </>
+                );
+              })()}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
