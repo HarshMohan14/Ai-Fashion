@@ -499,7 +499,7 @@ function PlayingScreen({
   onBrokenLook: (lookId: string) => void;
 }) {
   return (
-    <div className="relative flex flex-1 flex-col gap-4 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-[max(0.25rem,env(safe-area-inset-top))]">
+    <div className="relative flex flex-1 min-h-0 flex-col gap-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-[max(0.25rem,env(safe-area-inset-top))]">
       <GameTopBar onBack={onBack} />
       <header className="relative text-center">
         <div className="pointer-events-none absolute left-10 top-5 text-[#ff1493] drop-shadow-[0_0_14px_rgba(255,20,147,0.9)]">
@@ -508,11 +508,11 @@ function PlayingScreen({
         <div className="pointer-events-none absolute right-9 top-2 text-[#ff1493] drop-shadow-[0_0_14px_rgba(255,20,147,0.9)]">
           <Gem className="h-5 w-5 fill-current" />
         </div>
-        <h1 className="dfb-condensed text-[clamp(4.1rem,15.3vw,5.4rem)] uppercase italic leading-[0.76] tracking-[-0.045em]">
+        <h1 className="dfb-condensed text-[clamp(3.1rem,10vw,4.4rem)] uppercase italic leading-[0.76] tracking-[-0.045em]">
           <span className="text-white">Fit </span>
           <span className="text-[#ff1493]">Duel</span>
         </h1>
-        <div className="dfb-condensed -mt-1 flex items-center justify-center gap-2.5 text-[1.3rem] uppercase tracking-wide text-white/90">
+        <div className="dfb-condensed -mt-0.5 flex items-center justify-center gap-2.5 text-[1.1rem] uppercase tracking-wide text-white/90">
           <span className="h-0.5 w-12 bg-[#ff1493]" />
           Round <span className="text-[#ff1493]">{currentRound}</span> of {totalRounds}
           <span className="h-0.5 w-12 bg-[#ff1493]" />
@@ -521,7 +521,7 @@ function PlayingScreen({
 
       <ScenarioBox scenario={duel.scenario} timeLeft={timeLeft} />
 
-      <div className="relative grid flex-1 grid-cols-2 items-center gap-5">
+      <div className="relative grid flex-1 min-h-0 grid-cols-2 items-stretch gap-3 pb-1">
         <ChoiceCard
           side="left"
           look={duel.left}
@@ -549,15 +549,15 @@ function PlayingScreen({
         </div>
       </div>
 
-      <div className="flex flex-col items-center gap-3">
-        <div className="dfb-condensed rounded-full border-2 border-[#ffd600] px-10 py-2 text-2xl uppercase italic tracking-wide text-[#ffd600]">
+      <div className="flex flex-col items-center gap-1.5 pb-1">
+        <div className="dfb-condensed rounded-full border-2 border-[#ffd600] px-6 py-1.5 text-xl uppercase italic tracking-wide text-[#ffd600]">
           Choose Your Fit
         </div>
         <button
           type="button"
           onClick={onSkip}
           disabled={Boolean(selectedSide) || timedOut}
-          className="dfb-condensed text-xl uppercase text-white/60 underline decoration-white/35 underline-offset-4 transition hover:text-white disabled:opacity-40"
+          className="dfb-condensed text-sm uppercase text-white/60 underline decoration-white/35 underline-offset-4 transition hover:text-white disabled:opacity-40"
         >
           Skip This Round
         </button>
@@ -667,17 +667,12 @@ function GameTopBar({ onBack }: { onBack: () => void }) {
           DFB
         </div>
       </div>
-      <div className="flex items-center gap-1.5">
-        <div className="flex h-7 items-center gap-1 rounded-full border border-[#ff1493] bg-black px-2.5 text-[11px] font-black text-white shadow-[0_0_12px_rgba(255,20,147,0.3)]">
-          <Gem className="h-3.5 w-3.5 fill-[#ff1493] text-[#ff1493]" />
-          2,450
-          <span className="ml-0.5 grid h-4 w-4 place-items-center rounded-full border border-[#ff1493]">
-            <Plus className="h-2.5 w-2.5" />
-          </span>
+      <div className="flex items-center gap-2.5">
+        <div className="grid h-10 w-10 place-items-center rounded-full border border-[#ff1493] bg-black shadow-[0_0_12px_rgba(255,20,147,0.3)]">
+          <Gem className="h-5 w-5 fill-[#ff1493] text-[#ff1493]" />
         </div>
-        <div className="flex h-7 items-center gap-1 rounded-full bg-[#ffd600] px-2.5 text-[10px] font-black uppercase text-black shadow-[0_0_14px_rgba(255,214,0,0.24)]">
-          <Zap className="h-3.5 w-3.5 fill-current" />
-          5 Day Streak
+        <div className="grid h-10 w-10 place-items-center rounded-full bg-[#ffd600] shadow-[0_0_14px_rgba(255,214,0,0.24)]">
+          <Zap className="h-5 w-5 fill-black text-black" />
         </div>
       </div>
     </header>
@@ -685,26 +680,33 @@ function GameTopBar({ onBack }: { onBack: () => void }) {
 }
 
 function ScenarioBox({ scenario, timeLeft }: { scenario: string; timeLeft: number }) {
-  const urgent = timeLeft <= 3;
+  // Beating heart gets faster: 10s = ~1.5s beat, 1s = 0.3s beat
+  const beatDuration = Math.max(0.25, 0.2 + (timeLeft / 10) * 1.3);
+
   return (
-    <section className="relative rounded-[24px] border-2 border-[#ff1493] bg-black/90 px-4 pb-5 pt-5 text-center shadow-[0_0_24px_rgba(255,20,147,0.42)]">
-      <div className="mb-2 text-[11px] font-black uppercase tracking-[0.22em] text-[#ff1493]">
-        Scenario
-      </div>
-      <p className="text-[clamp(0.98rem,3.7vw,1.24rem)] font-semibold leading-snug text-white">
-        {scenario}
-      </p>
-      <motion.div
-        className="absolute -right-2.5 -top-7 z-10 grid h-[5.5rem] w-[5.5rem] place-items-center"
-        animate={urgent ? { scale: [1, 1.08, 1], rotate: [-3, 3, -3] } : { scale: [1, 1.02, 1] }}
-        transition={{ duration: urgent ? 0.45 : 1.8, repeat: Infinity, ease: 'easeInOut' }}
-      >
-        <Heart className="absolute inset-0 h-full w-full fill-black text-[#ff1493] drop-shadow-[0_0_24px_rgba(255,20,147,0.78)]" strokeWidth={2.2} />
-        <div className="relative z-10 text-center">
-          <div className="dfb-condensed text-[1.7rem] italic leading-none text-white">{timeLeft}s</div>
-          <div className="dfb-condensed text-[0.82rem] uppercase italic leading-none text-[#ff1493]">Left</div>
+    <section className="relative mx-3 flex items-center justify-between gap-3 rounded-[16px] border-2 border-[#ff1493] bg-black/90 px-4 py-3 shadow-[0_0_16px_rgba(255,20,147,0.42)]">
+      <div className="flex-1 text-left">
+        <div className="mb-1 text-[10px] font-black uppercase tracking-[0.2em] text-[#ff1493]">
+          Scenario
         </div>
-      </motion.div>
+        <p className="text-[clamp(0.85rem,3.2vw,1.1rem)] font-semibold leading-snug text-white">
+          {scenario}
+        </p>
+      </div>
+      <div className="h-[3.5rem] w-[2px] shrink-0 bg-white/20" />
+      <div className="relative flex shrink-0 items-center justify-center min-w-[4rem] min-h-[4rem]">
+        <motion.div
+          className="absolute inset-0 grid place-items-center text-[#ff1493]"
+          animate={{ scale: [1, 1.25, 1] }}
+          transition={{ duration: beatDuration, repeat: Infinity, ease: 'easeInOut' }}
+        >
+          <Heart className="h-full w-full opacity-60" strokeWidth={1.2} fill="transparent" />
+        </motion.div>
+        <div className="relative z-10 flex flex-col items-center justify-center pt-1">
+          <div className="dfb-condensed text-[1.8rem] italic leading-none text-white">{timeLeft}s</div>
+          <div className="dfb-condensed -mt-0.5 text-[0.7rem] uppercase italic leading-none text-[#ff1493]">Left</div>
+        </div>
+      </div>
     </section>
   );
 }
@@ -755,7 +757,7 @@ function ChoiceCard({
         onChoose(side);
       }}
       onKeyDown={chooseFromKeyboard}
-      className={`relative aspect-[9/16] w-full overflow-hidden rounded-[30px] border-[3px] bg-[#f7f2f5] transition-[filter] duration-500 ${sideClass} ${rejected || timedOut ? 'grayscale' : ''}`}
+      className={`relative h-full w-full overflow-hidden rounded-[20px] border-[3px] bg-white transition-[filter] duration-500 ${sideClass} ${rejected || timedOut ? 'grayscale' : ''}`}
       whileTap={{ scale: 0.97 }}
       animate={{
         scale: picked ? 1.045 : rejected || timedOut ? 0.96 : 1,
@@ -769,7 +771,6 @@ function ChoiceCard({
         alt={look.theme || look.model_name}
         onBroken={onBroken}
       />
-      <div className="pointer-events-none absolute inset-x-6 bottom-6 h-10 rounded-[50%] bg-black/10 blur-lg" />
       <button
         type="button"
         aria-pressed={rosePicked}
@@ -837,7 +838,7 @@ function SmartFullBodyImage({
   }
 
   return (
-    <div className="absolute inset-0 overflow-hidden bg-white">
+    <div className="absolute inset-0 overflow-hidden bg-[#f7f2f5]">
       <img
         src={src}
         alt={alt}
@@ -848,7 +849,7 @@ function SmartFullBodyImage({
           setBroken(true);
           onBroken?.();
         }}
-        className="relative z-10 h-full w-full object-contain object-center"
+        className="relative z-10 h-full w-full object-cover object-center"
       />
     </div>
   );
