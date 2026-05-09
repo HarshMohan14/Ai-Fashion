@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, Filter, Search, Shirt, Footprints, Watch, Sparkles, User, BadgeCheck, Inbox, Trash2, Layers, Activity, Briefcase, Glasses, Gem, Crown, Headphones } from 'lucide-react';
+import { ChevronDown, Filter, Search, Shirt, Footprints, Watch, Sparkles, User, BadgeCheck, Inbox, Trash2, Layers, Activity, Briefcase, Glasses, Gem, Crown } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { supabase, WardrobeItem } from '../lib/supabase';
 import { useDirector } from '../context/DirectorContext';
 
-const CATEGORIES: { name: string; icon: any; subs: string[] }[] = [
+const CATEGORIES: { name: string; icon: LucideIcon; subs: string[] }[] = [
   { name: 'Topwear', icon: Shirt, subs: ['T-Shirts', 'Casual Shirts', 'Formal Shirts', 'Sweatshirts', 'Hoodies', 'Sweaters', 'Polos', 'Tank Tops'] },
   { name: 'Bottomwear', icon: User, subs: ['Jeans', 'Chinos', 'Casual Trousers', 'Formal Trousers', 'Joggers', 'Shorts', 'Cargo Pants', 'Skirts', 'Leggings'] },
   { name: 'Outerwear', icon: Layers, subs: ['Jackets', 'Blazers', 'Coats', 'Cardigans', 'Trench Coats', 'Puffer Jackets', 'Vests'] },
@@ -344,6 +345,7 @@ function Card({
   flash,
   onVerify,
   onDelete,
+  onMoveToCollection,
 }: {
   item: WardrobeItem;
   delay: number;
@@ -358,6 +360,12 @@ function Card({
     item.success_rate >= 70 ? 'bg-amber-500' : 'bg-neutral-400';
 
   const isUnchecked = item.status === 'unchecked';
+  const imageUrl = item.image_url?.trim();
+  const [imageFailed, setImageFailed] = useState(!imageUrl);
+
+  useEffect(() => {
+    setImageFailed(!imageUrl);
+  }, [imageUrl]);
 
   return (
     <motion.div
@@ -381,20 +389,25 @@ function Card({
       }`}
     >
       <div className="relative aspect-[3/4] rounded-xl overflow-hidden bg-white">
-        {item.source !== 'extraction' && (
-          <div
-            className="absolute inset-0 scale-110 blur-2xl opacity-70"
-            style={{ backgroundImage: `url(${item.image_url})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
+        <div className="absolute inset-0 bg-gradient-to-br from-neutral-100 via-white to-neutral-200 dark:from-neutral-800 dark:via-neutral-900 dark:to-neutral-700" />
+        {imageUrl && !imageFailed ? (
+          <img
+            src={imageUrl}
+            alt={item.name}
+            className={`relative w-full h-full transition duration-700 group-hover:scale-105 ${
+              item.source === 'extraction' ? 'object-contain p-4' : 'object-cover'
+            }`}
+            loading="lazy"
+            decoding="async"
+            crossOrigin="anonymous"
+            referrerPolicy="no-referrer"
+            onError={() => setImageFailed(true)}
           />
+        ) : (
+          <div className="relative grid h-full w-full place-items-center p-6 text-center text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">
+            Image unavailable
+          </div>
         )}
-        <img
-          src={item.image_url}
-          alt={item.name}
-          className={`relative w-full h-full transition duration-700 group-hover:scale-105 ${
-            item.source === 'extraction' ? 'object-contain p-4' : 'object-cover'
-          }`}
-          loading="lazy"
-        />
         <div className="absolute top-3 left-3 flex gap-1.5 flex-wrap">
           {isUnchecked ? (
             <span className="text-[10px] uppercase tracking-wider font-semibold text-white px-2 py-1 rounded-full bg-amber-500 flex items-center gap-1">
