@@ -40,10 +40,13 @@ export type StylistModel = {
 
 export type Permutation = {
   model: StylistModel;
-  topwear: WardrobeItem;
+  topwear?: WardrobeItem | null;
   bottomwear?: WardrobeItem | null;
+  outerwear?: WardrobeItem | null;
   footwear?: WardrobeItem | null;
   accessory?: WardrobeItem | null;
+  bag?: WardrobeItem | null;
+  headwear?: WardrobeItem | null;
   theme: string;
 };
 
@@ -69,7 +72,7 @@ function pick<T>(arr: T[], rng: () => number): T {
 export async function fetchStylistInputs() {
   const [{ data: modelsData }, { data: itemsData }, ragData] = await Promise.all([
     supabase.from('models_public').select('id, nickname, primary_photo_url, composite_url, photos, physical_description'),
-    supabase.from('wardrobe_items').select('*'),
+    supabase.from('wardrobe_items').select('*').eq('status', 'verified'),
     fetchRagKnowledgeBaseRows(),
   ]);
   const referencesByModel = new Map<string, ModelReferenceImage>();
@@ -160,20 +163,26 @@ export function buildPermutations(
       : models.filter((m) => isHostedPhotosheetUrl(m.composite_url));
   if (!modelPool.length) return [];
 
-  const topwear = items.filter((i) => i.category?.toLowerCase() === 'topwear' || i.category?.toLowerCase() === 'indian wear');
-  const bottomwear = items.filter((i) => i.category?.toLowerCase() === 'bottomwear');
+  const topwear = items.filter((i) => ['topwear', 'indian wear', 'activewear'].includes(i.category?.toLowerCase() || ''));
+  const bottomwear = items.filter((i) => ['bottomwear', 'activewear'].includes(i.category?.toLowerCase() || ''));
+  const outerwear = items.filter((i) => i.category?.toLowerCase() === 'outerwear');
   const footwear = items.filter((i) => i.category?.toLowerCase() === 'footwear');
-  const accessories = items.filter((i) => i.category?.toLowerCase() === 'accessories');
+  const accessories = items.filter((i) => ['accessories', 'eyewear', 'jewelry'].includes(i.category?.toLowerCase() || ''));
+  const bags = items.filter((i) => i.category?.toLowerCase() === 'bags');
+  const headwear = items.filter((i) => i.category?.toLowerCase() === 'headwear');
 
   const out: Permutation[] = [];
   for (let i = 0; i < opts.count; i++) {
     const model = modelPool[i % modelPool.length];
-    if (!topwear.length) continue;
-    const top = pick(topwear, rng);
-    const bottom = bottomwear.length ? pick(bottomwear, rng) : null;
-    const shoe = footwear.length ? pick(footwear, rng) : null;
-    const acc = accessories.length && rng() > 0.5 ? pick(accessories, rng) : null;
-    out.push({ model, topwear: top, bottomwear: bottom, footwear: shoe, accessory: acc, theme: opts.theme });
+    const top = topwear.length ? pick(topwear, rng) : null;
+    const bottom = bottomwear.length && rng() > 0.2 ? pick(bottomwear, rng) : null;
+    const outr = outerwear.length && rng() > 0.5 ? pick(outerwear, rng) : null;
+    const shoe = footwear.length && rng() > 0.1 ? pick(footwear, rng) : null;
+    const acc = accessories.length && rng() > 0.3 ? pick(accessories, rng) : null;
+    const bag = bags.length && rng() > 0.6 ? pick(bags, rng) : null;
+    const hw = headwear.length && rng() > 0.5 ? pick(headwear, rng) : null;
+    if (!top && !outr) continue;
+    out.push({ model, topwear: top, bottomwear: bottom, outerwear: outr, footwear: shoe, accessory: acc, bag: bag, headwear: hw, theme: opts.theme });
   }
   return out;
 }
@@ -263,10 +272,13 @@ export async function generateLook(
   }
 
   const garmentUrls = [
-    p.topwear.image_url,
-    ...(p.bottomwear ? [p.bottomwear.image_url] : []),
-    ...(p.footwear ? [p.footwear.image_url] : []),
-    ...(p.accessory ? [p.accessory.image_url] : []),
+    p.topwear?.image_url,
+    p.bottomwear?.image_url,
+    p.outerwear?.image_url,
+    p.footwear?.image_url,
+    p.accessory?.image_url,
+    p.bag?.image_url,
+    p.headwear?.image_url,
   ].filter(Boolean);
 
   const referenceUrls = [...modelUrls, ...garmentUrls];
@@ -346,10 +358,13 @@ MANDATORY RUNWAY CARD FORMAT: ${RUNWAY_CARD_FORMAT_PROMPT}`;
   });
 
   const snapshot = [
-    { id: p.topwear.id, name: p.topwear.name, image: p.topwear.image_url, category: p.topwear.category },
+    ...(p.topwear ? [{ id: p.topwear.id, name: p.topwear.name, image: p.topwear.image_url, category: p.topwear.category }] : []),
     ...(p.bottomwear ? [{ id: p.bottomwear.id, name: p.bottomwear.name, image: p.bottomwear.image_url, category: p.bottomwear.category }] : []),
+    ...(p.outerwear ? [{ id: p.outerwear.id, name: p.outerwear.name, image: p.outerwear.image_url, category: p.outerwear.category }] : []),
     ...(p.footwear ? [{ id: p.footwear.id, name: p.footwear.name, image: p.footwear.image_url, category: p.footwear.category }] : []),
     ...(p.accessory ? [{ id: p.accessory.id, name: p.accessory.name, image: p.accessory.image_url, category: p.accessory.category }] : []),
+    ...(p.bag ? [{ id: p.bag.id, name: p.bag.name, image: p.bag.image_url, category: p.bag.category }] : []),
+    ...(p.headwear ? [{ id: p.headwear.id, name: p.headwear.name, image: p.headwear.image_url, category: p.headwear.category }] : []),
   ];
   const persistedSnapshot = snapshot.map(({ id, name, category }) => ({ id, name, image: '', category }));
   const itemIds = snapshot.map((s) => s.id);

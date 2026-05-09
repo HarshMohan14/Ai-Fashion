@@ -1,151 +1,40 @@
 import { useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Upload,
-  Layers,
-  Zap,
-  CheckCircle2,
-  FlaskConical,
-  Wand2,
-  StickyNote,
-  Trash2,
-  AlertCircle,
-  ArrowRight,
-  RefreshCw,
-  Sparkles,
-  PackageCheck,
-  Package,
-  RotateCcw,
-  Check,
-  ShieldCheck,
+  Upload, Layers, Zap, CheckCircle2, FlaskConical, Wand2, StickyNote, Trash2, AlertCircle, ArrowRight, RefreshCw, Sparkles, PackageCheck, Check, ShieldCheck, ChevronRight, RotateCcw, Package
 } from 'lucide-react';
-import {
-  analyzeOutfit,
-  cropItems,
-  hasGeminiKey,
-  type ExtractedItem,
-} from '../lib/drScientist';
-import { reRenderItem } from '../lib/nanoBanana';
+import { hasGeminiKey, type ExtractedItem } from '../lib/drScientist';
 import { supabase } from '../lib/supabase';
-
-type Stage = 'idle' | 'scanning' | 'review' | 'rerender' | 'verify' | 'packaging' | 'done';
+import { useExtractionQueue } from '../context/ExtractionQueueContext';
+import { LabItem } from '../lib/extractionUtils';
 
 const BLUEPRINT = '#22D3EE';
-
-type LabItem = ExtractedItem & {
-  renderedDataUrl?: string;
-  renderStatus?: 'pending' | 'ready' | 'failed';
-  renderModel?: string;
-  approved?: boolean;
-  dispatched?: boolean;
-  targetCategory?: string;
-  targetSubcategory?: string;
-};
-
-const CATEGORY_MAP: Array<{ match: RegExp; category: string; sub: string }> = [
-  { match: /t-?shirt|tee\b/i, category: 'Topwear', sub: 'T-Shirts' },
-  { match: /formal shirt|dress shirt/i, category: 'Topwear', sub: 'Formal Shirts' },
-  { match: /shirt|kurta/i, category: 'Topwear', sub: 'Casual Shirts' },
-  { match: /sweatshirt|hoodie/i, category: 'Topwear', sub: 'Sweatshirts' },
-  { match: /blazer|suit jacket/i, category: 'Topwear', sub: 'Blazers' },
-  { match: /jacket|coat|bomber|overcoat/i, category: 'Topwear', sub: 'Jackets' },
-  { match: /jean|denim/i, category: 'Bottomwear', sub: 'Jeans' },
-  { match: /chino/i, category: 'Bottomwear', sub: 'Chinos' },
-  { match: /jogger|track ?pant/i, category: 'Bottomwear', sub: 'Joggers' },
-  { match: /short/i, category: 'Bottomwear', sub: 'Shorts' },
-  { match: /formal trouser|dress pant/i, category: 'Bottomwear', sub: 'Formal Trousers' },
-  { match: /trouser|pant|bottom/i, category: 'Bottomwear', sub: 'Casual Trousers' },
-  { match: /sneaker|trainer/i, category: 'Footwear', sub: 'Sneakers' },
-  { match: /loafer/i, category: 'Footwear', sub: 'Loafers' },
-  { match: /formal shoe|oxford|derby/i, category: 'Footwear', sub: 'Formal Shoes' },
-  { match: /sandal|slipper/i, category: 'Footwear', sub: 'Sandals' },
-  { match: /shoe|boot|footwear/i, category: 'Footwear', sub: 'Casual Shoes' },
-  { match: /watch/i, category: 'Accessories', sub: 'Watches' },
-  { match: /sunglass|eyewear|glasses/i, category: 'Accessories', sub: 'Sunglasses' },
-  { match: /belt/i, category: 'Accessories', sub: 'Belts' },
-  { match: /fragrance|perfume/i, category: 'Accessories', sub: 'Fragrances' },
-  { match: /sherwani/i, category: 'Indian Wear', sub: 'Sherwanis' },
-  { match: /nehru/i, category: 'Indian Wear', sub: 'Nehru Jackets' },
-  { match: /kurta/i, category: 'Indian Wear', sub: 'Kurtas' },
-];
-
-function classifyItem(name: string, category: string): { category: string; subcategory: string } {
-  const hay = `${name} ${category}`;
-  for (const rule of CATEGORY_MAP) {
-    if (rule.match.test(hay)) return { category: rule.category, subcategory: rule.sub };
-  }
-  return { category: 'Topwear', subcategory: 'T-Shirts' };
-}
+type Stage = 'idle' | 'scanning' | 'review' | 'rerender' | 'verify' | 'packaging' | 'done';
 
 export function ExtractionLab() {
-  const [stage, setStage] = useState<Stage>('idle');
-  const [imageSrc, setImageSrc] = useState<string | null>(null);
-  const [items, setItems] = useState<LabItem[]>([]);
+  const { jobs, addJob, updateJob, updateJobItem, removeJobItem, startRendering, dismissJob, dispatchItem, regenerateItem } = useExtractionQueue();
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
-  const [mocked, setMocked] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [refineMode, setRefineMode] = useState(false);
-  const [activeModel, setActiveModel] = useState<string | null>(null);
-  const [extractionId, setExtractionId] = useState<string | null>(null);
-  const [dispatchedCount, setDispatchedCount] = useState(0);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const updateItem = (id: string, patch: Partial<LabItem>) =>
-    setItems((list) => list.map((i) => (i.id === id ? { ...i, ...patch } : i)));
+  const activeJob = jobs.find((j) => j.id === activeJobId);
+  const stage: Stage = !activeJob ? 'idle' :
+    activeJob.status === 'scanning' ? 'scanning' :
+    activeJob.status === 'review_pending' ? 'review' :
+    activeJob.status === 'rendering' ? 'rerender' :
+    activeJob.status === 'verify_pending' ? 'verify' :
+    activeJob.status === 'dispatched' ? 'done' : 'idle';
+  const imageSrc = activeJob?.originalImageSrc || null;
+  const items = activeJob?.items || [];
+  const mocked = activeJob?.mocked || false;
+  const activeModel = activeJob?.model || null;
+  const error = activeJob?.error || null;
 
-  const handleFiles = async (file: File) => {
-    setError(null);
-    setRefineMode(false);
-    setNotes('');
-    setItems([]);
-    setDispatchedCount(0);
-    setExtractionId(null);
-    setStage('scanning');
-    const src = URL.createObjectURL(file);
-    setImageSrc(src);
-
-    try {
-      const result = await analyzeOutfit(file);
-      setMocked(result.mocked);
-      setActiveModel(result.model ?? null);
-      if (result.items.length === 0) {
-        setError('Dr. Scientist could not detect any items. Try a clearer, well-lit photo of the full outfit.');
-        setStage('idle');
-        return;
-      }
-      const cropped = await cropItems(src, result.items);
-      const tagged: LabItem[] = cropped.map((c) => {
-        const { category, subcategory } = classifyItem(c.name, c.category);
-        return {
-          ...c,
-          targetCategory: category,
-          targetSubcategory: subcategory,
-          renderStatus: 'pending',
-        };
-      });
-      setItems(tagged);
-      setSelectedId(tagged[0]?.id ?? null);
-      setStage('review');
-
-      try {
-        const { data: auth } = await supabase.auth.getSession();
-        if (auth.session) {
-          const { data: ext } = await supabase
-            .from('extractions')
-            .insert({ notes: '', mocked: result.mocked, item_count: tagged.length, model: result.model ?? null })
-            .select('id')
-            .maybeSingle();
-          if (ext?.id) setExtractionId(ext.id);
-        }
-      } catch {
-        // persistence best-effort (RLS may block anon)
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Extraction failed');
-      setStage('idle');
-    }
+  const handleFiles = (file: File) => {
+    addJob(file);
+    setActiveJobId(null);
   };
 
   const onDrop = (e: React.DragEvent) => {
@@ -155,138 +44,33 @@ export function ExtractionLab() {
   };
 
   const reset = () => {
-    setStage('idle');
-    setImageSrc(null);
-    setItems([]);
+    setActiveJobId(null);
     setSelectedId(null);
     setNotes('');
-    setError(null);
     setRefineMode(false);
-    setExtractionId(null);
-    setDispatchedCount(0);
   };
 
   const removeItem = (id: string) => {
-    setItems((list) => list.filter((i) => i.id !== id));
+    if (activeJob) removeJobItem(activeJob.id, id);
     if (selectedId === id) setSelectedId(null);
   };
 
-  const runReRenderPhase = async () => {
-    setStage('rerender');
-    const queue = items.filter((i) => !i.renderedDataUrl && i.cropDataUrl);
-    for (const it of queue) {
-      updateItem(it.id, { renderStatus: 'pending' });
-      try {
-        const res = await reRenderItem({
-          cropDataUrl: it.cropDataUrl!,
-          category: it.category,
-          colorHex: it.color,
-          fabric: it.fabric,
-        });
-        updateItem(it.id, { renderedDataUrl: res.dataUrl, renderStatus: 'ready', renderModel: res.model });
-      } catch {
-        updateItem(it.id, { renderStatus: 'failed' });
-      }
-    }
-    setStage('verify');
+  const updateItem = (id: string, patch: Partial<LabItem>) => {
+    if (activeJob) updateJobItem(activeJob.id, id, patch);
   };
 
-  const regenerateItem = async (id: string, extra?: string) => {
-    const it = items.find((i) => i.id === id);
-    if (!it || !it.cropDataUrl) return;
-    updateItem(id, { renderStatus: 'pending', renderedDataUrl: undefined, approved: false });
-    try {
-      const res = await reRenderItem({
-        cropDataUrl: it.cropDataUrl,
-        category: it.category,
-        colorHex: it.color,
-        fabric: it.fabric,
-        extraInstructions: extra,
-      });
-      updateItem(id, { renderedDataUrl: res.dataUrl, renderStatus: 'ready', renderModel: res.model });
-    } catch {
-      updateItem(id, { renderStatus: 'failed' });
+  const runReRenderPhase = () => {
+    if (activeJob) {
+      startRendering(activeJob.id);
+      setActiveJobId(null); // Return to dashboard
     }
-  };
-
-  // Convert base64 data url to Blob
-  const dataUrlToBlob = (dataUrl: string) => {
-    const parts = dataUrl.split(',');
-    const match = parts[0].match(/:(.*?);/);
-    const mime = match ? match[1] : 'image/png';
-    const bstr = atob(parts[1]);
-    let n = bstr.length;
-    const u8arr = new Uint8Array(n);
-    while(n--){
-        u8arr[n] = bstr.charCodeAt(n);
-    }
-    return new Blob([u8arr], {type:mime});
-  };
-
-  const approveAndSend = async (id: string) => {
-    const it = items.find((i) => i.id === id);
-    if (!it || !it.renderedDataUrl || it.dispatched) return;
-    updateItem(id, { approved: true });
-
-    try {
-      const blob = dataUrlToBlob(it.renderedDataUrl);
-      const ext = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png';
-      const filePath = `wardrobe-items/${it.id}.${ext}`;
-      
-      const { error: uploadErr } = await supabase.storage
-        .from('model-photosheets')
-        .upload(filePath, blob, { contentType: blob.type, upsert: true });
-
-      let finalImageUrl = it.renderedDataUrl;
-      if (!uploadErr) {
-        const { data } = supabase.storage.from('model-photosheets').getPublicUrl(filePath);
-        finalImageUrl = data.publicUrl;
-      }
-
-      await supabase.from('wardrobe_items').insert({
-        name: it.name,
-        category: it.targetCategory || 'Topwear',
-        subcategory: it.targetSubcategory || 'T-Shirts',
-        image_url: finalImageUrl,
-        fabric: it.fabric,
-        fit: it.fit,
-        color_hex: it.color,
-        parent_model_id: extractionId,
-        status: 'unchecked',
-        source: 'extraction',
-        rendered_at: new Date().toISOString(),
-        success_rate: Math.round(it.confidence * 100),
-        popularity: 0,
-      });
-    } catch {
-      // keep UX moving even if insert blocked
-    }
-
-    setStage('packaging');
-    window.setTimeout(() => {
-      updateItem(id, { dispatched: true });
-      setDispatchedCount((c) => c + 1);
-      setStage('verify');
-    }, 1400);
-  };
-
-  const approveAll = async () => {
-    for (const it of items) {
-      if (it.renderedDataUrl && !it.dispatched) {
-        await approveAndSend(it.id);
-      }
-    }
-    setStage('done');
   };
 
   const saveNotes = async () => {
-    if (extractionId) {
-      await supabase.from('extractions').update({ notes }).eq('id', extractionId);
-    }
+    // Optional
   };
 
   const selected = items.find((i) => i.id === selectedId) ?? null;
-  const allDispatched = items.length > 0 && items.every((i) => i.dispatched);
 
   return (
     <div className="space-y-6">
@@ -295,26 +79,18 @@ export function ExtractionLab() {
           <div className="eyebrow">Section 03 · Dr. Scientist</div>
           <h1 className="section-title mt-2">Extraction Lab</h1>
           <p className="text-sm text-neutral-600 dark:text-neutral-400 mt-1.5 max-w-xl">
-            Drop a full-outfit photo. Dr. Scientist deconstructs it, then Nano Banana re-renders each piece
-            as a clean studio product shot before handover to Dr. Shopkeeper.
+            Drop a full-outfit photo. Dr. Scientist deconstructs it. Nano Banana extracts it in the background.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <span
-            className={`chip ${hasGeminiKey() ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}
-          >
+          <span className={`chip ${hasGeminiKey() ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>
             <FlaskConical className="w-3 h-3" />
-            {hasGeminiKey()
-              ? `${activeModel ? formatModelName(activeModel) : 'Gemini · Flash'} · Online`
-              : 'Mock Mode · Add VITE_GEMINI_API_KEY'}
+            {hasGeminiKey() ? 'Gemini · Flash · Online' : 'Mock Mode'}
           </span>
         </div>
       </div>
 
-      <StageRail stage={stage} />
-
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* LEFT CANVAS */}
         <div className="xl:col-span-2 bento relative overflow-hidden">
           <input
             ref={fileInputRef}
@@ -324,29 +100,29 @@ export function ExtractionLab() {
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (f) handleFiles(f);
+              if (fileInputRef.current) fileInputRef.current.value = '';
             }}
           />
 
           <div
-            onClick={() => stage === 'idle' && fileInputRef.current?.click()}
+            onClick={() => !activeJobId && fileInputRef.current?.click()}
             onDragOver={(e) => e.preventDefault()}
             onDrop={onDrop}
             className={`relative rounded-xl border-2 ${
-              stage === 'idle'
-                ? 'border-dashed border-lab-border-light dark:border-lab-border cursor-pointer'
+              !activeJobId
+                ? 'border-dashed border-lab-border-light dark:border-lab-border cursor-pointer hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition'
                 : 'border-solid border-transparent'
             } h-[520px] grid place-items-center text-center overflow-hidden bg-black/[0.02] dark:bg-white/[0.02]`}
           >
-            {imageSrc && stage !== 'verify' && stage !== 'packaging' && stage !== 'done' && (
+            {imageSrc && (
               <img src={imageSrc} alt="subject" className="absolute inset-0 w-full h-full object-contain" crossOrigin="anonymous" />
             )}
 
-            {/* Verify stage — side-by-side of selected item */}
-            {(stage === 'verify' || stage === 'packaging' || stage === 'done') && selected && (
+            {(stage === 'verify' || stage === 'done') && selected && (
               <VerifyCompare item={selected} />
             )}
 
-            {imageSrc && (stage === 'review') && (
+            {imageSrc && stage === 'review' && (
               <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
                 {items.map((it) => {
                   const active = selectedId === it.id;
@@ -386,72 +162,14 @@ export function ExtractionLab() {
               </svg>
             )}
 
-            {stage === 'scanning' && (
-              <>
-                <div className="absolute inset-0 bg-black/30" />
-                <div
-                  className="absolute left-0 right-0 h-[3px]"
-                  style={{
-                    background: `linear-gradient(90deg, transparent, ${BLUEPRINT}, transparent)`,
-                    boxShadow: `0 0 28px 6px ${BLUEPRINT}88`,
-                    animation: 'labScan 1.6s cubic-bezier(0.4,0,0.2,1) infinite alternate',
-                  }}
-                />
-                <div className="relative z-10 text-white">
-                  <motion.div
-                    animate={{ rotate: 360 }}
-                    transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }}
-                    className="w-12 h-12 rounded-full border-2 border-white/70 border-t-transparent mx-auto mb-3"
-                  />
-                  <div className="font-display text-2xl">Scanning outfit…</div>
-                  <div className="text-sm text-white/70 mt-1">Dr. Scientist is segmenting layers.</div>
-                </div>
-              </>
-            )}
-
-            {stage === 'rerender' && (
-              <>
-                <div className="absolute inset-0 bg-white/70 dark:bg-black/60 backdrop-blur-sm" />
-                <motion.div
-                  className="absolute inset-0 rounded-xl"
-                  animate={{
-                    boxShadow: [
-                      '0 0 0 0 rgba(255,255,255,0.0) inset',
-                      '0 0 80px 12px rgba(255,255,255,0.55) inset',
-                      '0 0 0 0 rgba(255,255,255,0.0) inset',
-                    ],
-                  }}
-                  transition={{ duration: 2.2, repeat: Infinity, ease: 'easeInOut' }}
-                />
-                <div className="relative z-10">
-                  <motion.div
-                    animate={{ scale: [1, 1.08, 1] }}
-                    transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
-                    className="w-16 h-16 rounded-2xl bg-white grid place-items-center mx-auto mb-4 shadow-[0_0_40px_rgba(255,255,255,0.85)]"
-                  >
-                    <Sparkles className="w-7 h-7 text-cobalt dark:text-indigo_electric" />
-                  </motion.div>
-                  <div className="font-display text-2xl">Dr. Scientist is re-rendering garments…</div>
-                  <div className="text-sm text-neutral-500 mt-2">
-                    Nano Banana is staging each piece on a pure white studio background.
-                  </div>
-                  <div className="mt-4 text-xs text-neutral-500 flex items-center justify-center gap-2">
-                    <span>
-                      {items.filter((i) => i.renderStatus === 'ready').length} / {items.length} rendered
-                    </span>
-                  </div>
-                </div>
-              </>
-            )}
-
-            {stage === 'idle' && !imageSrc && (
+            {!activeJobId && (
               <div>
                 <div className="w-16 h-16 rounded-2xl bg-white dark:bg-white/10 grid place-items-center mx-auto mb-4 shadow-boutique">
                   <Upload className="w-6 h-6 text-cobalt dark:text-indigo_electric" />
                 </div>
                 <div className="font-display text-2xl">Drop an outfit photo</div>
                 <div className="text-sm text-neutral-500 mt-2">
-                  or click to upload · JPG, PNG, WebP up to 10 MB
+                  or click to upload · Queue multiple images at once
                 </div>
                 <button
                   onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
@@ -459,17 +177,11 @@ export function ExtractionLab() {
                 >
                   <Zap className="w-3.5 h-3.5" /> Upload outfit
                 </button>
-                {error && (
-                  <div className="mt-4 text-sm text-rose-600 flex items-center gap-2 justify-center max-w-md mx-auto">
-                    <AlertCircle className="w-4 h-4 shrink-0" /> <span>{error}</span>
-                  </div>
-                )}
               </div>
             )}
           </div>
 
-          {/* Toolbar */}
-          {imageSrc && stage !== 'scanning' && stage !== 'rerender' && (
+          {activeJobId && (
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <button
                 onClick={() => setRefineMode((r) => !r)}
@@ -480,24 +192,18 @@ export function ExtractionLab() {
               <span className="chip">
                 {items.length} item{items.length === 1 ? '' : 's'} detected
               </span>
-              {mocked && <span className="chip bg-amber-500/10 text-amber-700 dark:text-amber-300">Simulated</span>}
-              {stage === 'verify' && (
-                <span className="chip bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
-                  <ShieldCheck className="w-3 h-3" /> Verify & sanitize
-                </span>
-              )}
               <div className="ml-auto flex items-center gap-2">
                 <button onClick={reset} className="chip cursor-pointer">
-                  <RefreshCw className="w-3 h-3" /> New scan
+                  <RefreshCw className="w-3 h-3" /> Back to Queue
                 </button>
                 {stage === 'review' && items.length > 0 && (
                   <button onClick={runReRenderPhase} className="btn-primary">
-                    Re-render with Nano Banana <Sparkles className="w-3.5 h-3.5" />
+                    Extract & Render <Sparkles className="w-3.5 h-3.5" />
                   </button>
                 )}
-                {stage === 'verify' && !allDispatched && (
-                  <button onClick={approveAll} className="btn-primary">
-                    Approve all & send <ArrowRight className="w-3.5 h-3.5" />
+                {stage === 'verify' && (
+                  <button onClick={() => { dismissJob(activeJob.id); reset(); }} className="btn-primary bg-emerald-500 hover:bg-emerald-600 border-emerald-500 text-white">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Finish & Close
                   </button>
                 )}
               </div>
@@ -505,250 +211,131 @@ export function ExtractionLab() {
           )}
 
           {refineMode && selected && stage === 'review' && (
-            <RefinePanel
-              item={selected}
-              onChange={(box) => updateItem(selected.id, { box })}
-            />
+            <RefinePanel item={selected} onChange={(box) => updateItem(selected.id, { box })} />
           )}
         </div>
 
-        {/* RIGHT PANEL */}
         <div className="space-y-4">
-          {selected && (stage === 'verify' || stage === 'packaging' || stage === 'done') && (
-            <VerifyCard
-              item={selected}
-              onApprove={() => approveAndSend(selected.id)}
-              onRegenerate={() => regenerateItem(selected.id)}
-            />
-          )}
-
-          <div className="bento">
-            <div className="flex items-center gap-2 mb-3">
-              <Layers className="w-4 h-4 text-cobalt dark:text-indigo_electric" />
-              <div className="font-medium">Children</div>
-              {stage === 'verify' && (
-                <span className="chip ml-auto">
-                  {items.filter((i) => i.dispatched).length} / {items.length} sent
-                </span>
-              )}
-            </div>
-
-            {stage === 'idle' && !error && (
-              <div className="text-sm text-neutral-500">
-                Upload a photo to see Dr. Scientist isolate each garment.
-              </div>
-            )}
-
-            {stage === 'scanning' && (
-              <div className="space-y-2">
-                {Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} className="h-14 rounded-lg bg-black/5 dark:bg-white/5 animate-pulse" />
-                ))}
-              </div>
-            )}
-
-            {(stage === 'review' || stage === 'rerender' || stage === 'verify' || stage === 'packaging' || stage === 'done') && (
-              <div className="space-y-2 max-h-[360px] overflow-y-auto custom-scroll pr-1">
-                <AnimatePresence>
-                  {items.map((it) => (
-                    <motion.div
-                      key={it.id}
-                      layout
-                      role="button"
-                      tabIndex={0}
-                      initial={{ opacity: 0, x: 12 }}
-                      animate={
-                        it.dispatched
-                          ? { opacity: 0, x: 500, y: 200, scale: 0.35, rotate: 6 }
-                          : { opacity: 1, x: 0, y: 0, scale: 1, rotate: 0 }
-                      }
-                      exit={{ opacity: 0, x: -20 }}
-                      transition={{ type: 'spring', stiffness: 110, damping: 18 }}
-                      onClick={() => setSelectedId(it.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          setSelectedId(it.id);
-                        }
-                      }}
-                      className={`w-full flex items-center gap-3 p-2 rounded-xl border text-left transition ${
-                        selectedId === it.id
-                          ? 'border-cyan-400/60 bg-cyan-500/5'
-                          : 'border-lab-border-light dark:border-lab-border hover:bg-black/[0.03] dark:hover:bg-white/[0.03]'
-                      }`}
-                    >
-                      <div
-                        className="w-12 h-12 rounded-lg border border-lab-border-light dark:border-lab-border overflow-hidden shrink-0 relative"
-                        style={{
-                          backgroundImage:
-                            'linear-gradient(45deg, rgba(0,0,0,0.04) 25%, transparent 25%), linear-gradient(-45deg, rgba(0,0,0,0.04) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgba(0,0,0,0.04) 75%), linear-gradient(-45deg, transparent 75%, rgba(0,0,0,0.04) 75%)',
-                          backgroundSize: '10px 10px',
-                          backgroundPosition: '0 0, 0 5px, 5px -5px, -5px 0',
-                        }}
-                      >
-                        {(it.renderedDataUrl || it.cropDataUrl) && (
-                          <img
-                            src={it.renderedDataUrl || it.cropDataUrl}
-                            alt={it.name}
-                            className="w-full h-full object-cover"
-                          />
-                        )}
-                        {it.renderStatus === 'pending' && stage === 'rerender' && (
-                          <div className="absolute inset-0 grid place-items-center bg-black/10">
-                            <motion.div
-                              className="w-5 h-5 rounded-full bg-white shadow-[0_0_14px_rgba(255,255,255,0.9)]"
-                              animate={{ scale: [1, 1.25, 1], opacity: [0.7, 1, 0.7] }}
-                              transition={{ duration: 1.2, repeat: Infinity }}
-                            />
+          {!activeJobId ? (
+            <div className="space-y-6">
+              <div className="bento min-h-[200px]">
+                <div className="flex items-center gap-2 mb-3">
+                  <Layers className="w-4 h-4 text-cobalt dark:text-indigo_electric" />
+                  <div className="font-medium">Detected (Awaiting Render)</div>
+                </div>
+                {jobs.filter(j => ['scanning', 'review_pending'].includes(j.status)).length === 0 ? (
+                  <div className="text-sm text-neutral-500">No items detected yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {jobs.filter(j => ['scanning', 'review_pending'].includes(j.status)).map((job) => (
+                      <div key={job.id} className="flex items-center justify-between p-3 border border-lab-border-light dark:border-lab-border rounded-xl">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0">
+                             <img src={job.originalImageSrc} className="w-full h-full object-cover" alt="" />
                           </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium truncate">{job.progressMessage}</div>
+                            <div className="text-xs text-neutral-500 capitalize">{job.status.replace('_', ' ')}</div>
+                          </div>
+                        </div>
+                        {job.status === 'review_pending' && (
+                          <button onClick={() => setActiveJobId(job.id)} className="btn-secondary text-xs px-3 py-1.5">
+                            Review <ChevronRight className="w-3.5 h-3.5" />
+                          </button>
                         )}
                       </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium truncate flex items-center gap-1.5">
-                          {it.name}
-                          {it.dispatched && <PackageCheck className="w-3.5 h-3.5 text-emerald-500" />}
-                          {it.approved && !it.dispatched && <Check className="w-3.5 h-3.5 text-emerald-500" />}
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="bento min-h-[200px]">
+                <div className="flex items-center gap-2 mb-3">
+                  <PackageCheck className="w-4 h-4 text-emerald-500" />
+                  <div className="font-medium">Rendered (Awaiting Approval)</div>
+                </div>
+                {jobs.filter(j => ['rendering', 'verify_pending'].includes(j.status)).length === 0 ? (
+                  <div className="text-sm text-neutral-500">No items ready for approval.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {jobs.filter(j => ['rendering', 'verify_pending'].includes(j.status)).map((job) => (
+                      <div key={job.id} className="flex items-center justify-between p-3 border border-lab-border-light dark:border-lab-border rounded-xl">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0">
+                             <img src={job.originalImageSrc} className="w-full h-full object-cover" alt="" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium truncate">{job.progressMessage}</div>
+                            <div className="text-xs text-neutral-500 capitalize">{job.status.replace('_', ' ')}</div>
+                          </div>
                         </div>
-                        <div className="text-[10px] uppercase tracking-[0.18em] text-neutral-500 truncate">
-                          {it.targetCategory ? `${it.targetCategory} · ${it.targetSubcategory}` : it.category}
-                        </div>
-                        <div className="flex items-center gap-1.5 mt-1">
-                          <span className="w-2.5 h-2.5 rounded-full border border-black/10 dark:border-white/10" style={{ background: it.color }} />
-                          <span className="text-[10px] text-neutral-500">
-                            {it.fabric} · {it.fit} · {Math.round(it.confidence * 100)}%
-                          </span>
-                        </div>
+                        {job.status === 'verify_pending' && (
+                          <button onClick={() => { setActiveJobId(job.id); setSelectedId(job.items[0]?.id || null); }} className="btn-primary text-xs px-3 py-1.5">
+                            Verify <ChevronRight className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
-                      {stage === 'review' && (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); removeItem(it.id); }}
-                          className="w-7 h-7 rounded-lg grid place-items-center text-neutral-400 hover:text-rose-500 hover:bg-rose-500/10"
-                        >
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <>
+              {selected && (stage === 'verify' || stage === 'done') && (
+                <VerifyCard
+                  item={selected}
+                  onApprove={() => dispatchItem(activeJob.id, selected.id)}
+                  onRegenerate={() => regenerateItem(activeJob.id, selected.id)}
+                />
+              )}
+              <div className="bento">
+                <div className="flex items-center gap-2 mb-3">
+                  <Layers className="w-4 h-4 text-cobalt dark:text-indigo_electric" />
+                  <div className="font-medium">Children</div>
+                </div>
+                <div className="space-y-2 max-h-[360px] overflow-y-auto custom-scroll pr-1">
+                  <AnimatePresence>
+                    {items.map((it) => (
+                      <motion.div
+                        key={it.id}
+                        layout
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setSelectedId(it.id)}
+                        className={`w-full flex items-center gap-3 p-2 rounded-xl border text-left transition ${
+                          selectedId === it.id
+                            ? 'border-cyan-400/60 bg-cyan-500/5'
+                            : 'border-lab-border-light dark:border-lab-border hover:bg-black/[0.03] dark:hover:bg-white/[0.03]'
+                        }`}
+                      >
+                        <div className="w-12 h-12 rounded-lg border border-lab-border-light dark:border-lab-border overflow-hidden shrink-0">
+                          {(it.renderedDataUrl || it.cropDataUrl) && (
+                            <img src={it.renderedDataUrl || it.cropDataUrl} alt={it.name} className="w-full h-full object-cover" />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium truncate">{it.name}</div>
+                          <div className="text-[10px] uppercase tracking-[0.18em] text-neutral-500 truncate">
+                            {it.targetCategory ? `${it.targetCategory} · ${it.targetSubcategory}` : it.category}
+                          </div>
+                        </div>
+                        <button onClick={(e) => { e.stopPropagation(); removeItem(it.id); }} className="w-7 h-7 rounded-lg grid place-items-center text-neutral-400 hover:text-rose-500">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
-                      )}
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                </div>
               </div>
-            )}
-          </div>
-
-          <div className="bento">
-            <div className="flex items-center gap-2 mb-3">
-              <StickyNote className="w-4 h-4 text-cobalt dark:text-indigo_electric" />
-              <div className="font-medium">Dr.'s Notes</div>
-            </div>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              onBlur={saveNotes}
-              placeholder="e.g. Missed the watch on the left wrist — add accessory."
-              className="w-full h-24 resize-none bg-transparent outline-none text-sm p-3 rounded-lg border border-lab-border-light dark:border-lab-border focus:border-cyan-400/60 transition"
-            />
-            <div className="text-[11px] text-neutral-500 mt-2">
-              Saved with the extraction so Dr. Scientist learns your eye.
-            </div>
-          </div>
+            </>
+          )}
         </div>
       </div>
-
-      {/* Packaging overlay */}
-      <AnimatePresence>
-        {stage === 'packaging' && selected?.renderedDataUrl && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 pointer-events-none"
-          >
-            <motion.div
-              initial={{ top: '40%', left: '40%', scale: 1, opacity: 1, rotate: 0 }}
-              animate={{ top: '88%', left: '92%', scale: 0.18, opacity: 0.2, rotate: 12 }}
-              transition={{ duration: 1.2, ease: [0.65, 0, 0.35, 1] }}
-              className="absolute w-48 h-48 rounded-2xl overflow-hidden bg-white border border-neutral-200 shadow-2xl"
-            >
-              <img src={selected.renderedDataUrl} alt={selected.name} className="w-full h-full object-contain" />
-              <motion.div
-                className="absolute inset-0 border-2 border-emerald-400 rounded-2xl"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: [0, 1, 0] }}
-                transition={{ duration: 1.2 }}
-              />
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Completion toast */}
-      <AnimatePresence>
-        {(stage === 'done' || (stage === 'verify' && dispatchedCount > 0 && allDispatched)) && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            className="fixed bottom-6 right-6 z-40 bento flex items-center gap-3 shadow-boutique"
-          >
-            <div className="w-10 h-10 rounded-full bg-emerald-500 grid place-items-center">
-              <CheckCircle2 className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <div className="font-display text-lg leading-tight">Handover complete</div>
-              <div className="text-xs text-neutral-500">
-                {dispatchedCount} asset{dispatchedCount === 1 ? '' : 's'} filed in the Digital Wardrobe as
-                Unchecked.
-              </div>
-            </div>
-            <button onClick={reset} className="btn-primary ml-2">New scan</button>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }
 
-function StageRail({ stage }: { stage: Stage }) {
-  const steps: Array<{ key: Stage | Stage[]; label: string }> = [
-    { key: ['scanning'], label: 'Scan' },
-    { key: ['review'], label: 'Review' },
-    { key: ['rerender'], label: 'Re-render' },
-    { key: ['verify', 'packaging'], label: 'Verify' },
-    { key: ['done'], label: 'Handover' },
-  ];
-  const order: Stage[] = ['idle', 'scanning', 'review', 'rerender', 'verify', 'packaging', 'done'];
-  const idx = order.indexOf(stage);
-  return (
-    <div className="bento p-3">
-      <div className="flex items-center gap-3 overflow-x-auto">
-        {steps.map((s, i) => {
-          const keys = Array.isArray(s.key) ? s.key : [s.key];
-          const active = keys.includes(stage);
-          const doneIdx = order.indexOf(keys[keys.length - 1] as Stage);
-          const done = idx > doneIdx;
-          return (
-            <div key={s.label} className="flex items-center gap-3 shrink-0">
-              <div className={`flex items-center gap-2 ${active ? 'text-cobalt dark:text-indigo_electric' : done ? 'text-emerald-500' : 'text-neutral-400'}`}>
-                <div
-                  className={`w-6 h-6 rounded-full grid place-items-center text-[11px] font-semibold border ${
-                    active
-                      ? 'border-cobalt dark:border-indigo_electric bg-cobalt/10 dark:bg-indigo_electric/10'
-                      : done
-                      ? 'border-emerald-500 bg-emerald-500/10'
-                      : 'border-lab-border-light dark:border-lab-border'
-                  }`}
-                >
-                  {done ? <Check className="w-3 h-3" /> : i + 1}
-                </div>
-                <span className="text-xs font-medium uppercase tracking-[0.18em]">{s.label}</span>
-              </div>
-              {i < steps.length - 1 && <div className="w-8 h-px bg-lab-border-light dark:bg-lab-border" />}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 function VerifyCompare({ item }: { item: LabItem }) {
   return (

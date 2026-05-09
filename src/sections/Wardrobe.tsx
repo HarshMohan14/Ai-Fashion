@@ -1,27 +1,35 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, Filter, Search, Shirt, Footprints, Watch, Sparkles, User, BadgeCheck, Inbox, Trash2 } from 'lucide-react';
+import { ChevronDown, Filter, Search, Shirt, Footprints, Watch, Sparkles, User, BadgeCheck, Inbox, Trash2, Layers, Activity, Briefcase, Glasses, Gem, Crown, Headphones } from 'lucide-react';
 import { supabase, WardrobeItem } from '../lib/supabase';
 import { useDirector } from '../context/DirectorContext';
 
-const CATEGORIES: { name: string; icon: typeof Shirt; subs: string[] }[] = [
-  { name: 'Topwear', icon: Shirt, subs: ['T-Shirts', 'Casual Shirts', 'Formal Shirts', 'Sweatshirts', 'Jackets', 'Blazers'] },
-  { name: 'Bottomwear', icon: User, subs: ['Jeans', 'Chinos', 'Casual Trousers', 'Formal Trousers', 'Joggers', 'Shorts'] },
-  { name: 'Footwear', icon: Footprints, subs: ['Casual Shoes', 'Sneakers', 'Formal Shoes', 'Loafers', 'Sandals'] },
-  { name: 'Accessories', icon: Watch, subs: ['Watches', 'Sunglasses', 'Belts', 'Fragrances'] },
-  { name: 'Indian Wear', icon: Sparkles, subs: ['Kurtas', 'Nehru Jackets', 'Sherwanis'] },
+const CATEGORIES: { name: string; icon: any; subs: string[] }[] = [
+  { name: 'Topwear', icon: Shirt, subs: ['T-Shirts', 'Casual Shirts', 'Formal Shirts', 'Sweatshirts', 'Hoodies', 'Sweaters', 'Polos', 'Tank Tops'] },
+  { name: 'Bottomwear', icon: User, subs: ['Jeans', 'Chinos', 'Casual Trousers', 'Formal Trousers', 'Joggers', 'Shorts', 'Cargo Pants', 'Skirts', 'Leggings'] },
+  { name: 'Outerwear', icon: Layers, subs: ['Jackets', 'Blazers', 'Coats', 'Cardigans', 'Trench Coats', 'Puffer Jackets', 'Vests'] },
+  { name: 'Activewear', icon: Activity, subs: ['Tracksuits', 'Sports Bras', 'Gym Shorts', 'Athletic Leggings'] },
+  { name: 'Footwear', icon: Footprints, subs: ['Casual Shoes', 'Sneakers', 'Formal Shoes', 'Loafers', 'Sandals', 'Boots', 'Heels', 'Flats'] },
+  { name: 'Accessories', icon: Watch, subs: ['Watches', 'Belts', 'Fragrances', 'Scarves', 'Ties', 'Gloves', 'Headphones'] },
+  { name: 'Eyewear', icon: Glasses, subs: ['Sunglasses', 'Reading Glasses'] },
+  { name: 'Jewelry', icon: Gem, subs: ['Necklaces', 'Rings', 'Bracelets', 'Earrings'] },
+  { name: 'Bags', icon: Briefcase, subs: ['Backpacks', 'Handbags', 'Tote Bags', 'Messenger Bags', 'Duffles'] },
+  { name: 'Headwear', icon: Crown, subs: ['Caps', 'Hats', 'Beanies'] },
+  { name: 'Indian Wear', icon: Sparkles, subs: ['Kurtas', 'Nehru Jackets', 'Sherwanis', 'Sarees', 'Lehengas', 'Dhotis', 'Salwar Suits'] },
 ];
 
 type Sort = 'popularity' | 'newest' | 'rating';
 
 export function Wardrobe() {
   const [items, setItems] = useState<WardrobeItem[]>([]);
+  const [collectionTab, setCollectionTab] = useState<'regular' | 'comicon'>('regular');
   const [category, setCategory] = useState<string>('Topwear');
   const [subcategory, setSubcategory] = useState<string>('All');
   const [sort, setSort] = useState<Sort>('popularity');
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [onlyUnchecked, setOnlyUnchecked] = useState(false);
+  const [onlyVerified, setOnlyVerified] = useState(false);
   const [flashId, setFlashId] = useState<string | null>(null);
   const director = useDirector();
 
@@ -71,15 +79,17 @@ export function Wardrobe() {
   const currentCat = CATEGORIES.find((c) => c.name === category)!;
 
   const filtered = useMemo(() => {
-    let list = items.filter((i) => i.category === category);
+    let list = items.filter((i) => (i.collection || 'regular') === collectionTab);
+    list = list.filter((i) => i.category === category);
     if (subcategory !== 'All') list = list.filter((i) => i.subcategory === subcategory);
     if (query) list = list.filter((i) => i.name.toLowerCase().includes(query.toLowerCase()));
     if (onlyUnchecked) list = list.filter((i) => i.status === 'unchecked');
+    if (onlyVerified) list = list.filter((i) => i.status === 'verified');
     if (sort === 'popularity') list = [...list].sort((a, b) => b.popularity - a.popularity);
     if (sort === 'rating') list = [...list].sort((a, b) => b.success_rate - a.success_rate);
     if (sort === 'newest') list = [...list].sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
     return list;
-  }, [items, category, subcategory, sort, query, onlyUnchecked]);
+  }, [items, collectionTab, category, subcategory, sort, query, onlyUnchecked, onlyVerified]);
 
   const markVerified = async (id: string) => {
     const snapshot = items;
@@ -95,6 +105,21 @@ export function Wardrobe() {
         'Dr. Shopkeeper',
         error?.message || 'Could not mark this item verified — the database rejected the change.',
       );
+    }
+  };
+
+  
+  const moveToCollection = async (id: string, targetCollection: 'regular' | 'comicon') => {
+    const snapshot = items;
+    setItems((list) => list.map((i) => (i.id === id ? { ...i, collection: targetCollection } : i)));
+    const { data, error } = await supabase
+      .from('wardrobe_items')
+      .update({ collection: targetCollection })
+      .eq('id', id)
+      .select('id');
+    if (error || !data || data.length === 0) {
+      setItems(snapshot);
+      director.push('Dr. Shopkeeper', error?.message || 'Could not move this item.');
     }
   };
 
@@ -119,17 +144,30 @@ export function Wardrobe() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-end justify-between flex-wrap gap-4">
-        <div>
+                <div>
           <div className="eyebrow">Section 02 · Dr. Shopkeeper</div>
           <h1 className="section-title mt-2">Digital Wardrobe</h1>
           <p className="text-sm text-neutral-600 dark:text-neutral-400 mt-1.5 max-w-xl">
-            A curated atelier of every garment extracted into the lab. Browse by department, fine-tune the
-            rail, and study each piece's date-night success rate.
+            A curated atelier of every garment extracted into the lab.
           </p>
+          <div className="flex bg-black/5 dark:bg-white/5 p-1 rounded-xl mt-4 w-max">
+            <button
+              onClick={() => setCollectionTab('regular')}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${collectionTab === 'regular' ? 'bg-white dark:bg-[#222] shadow text-cobalt dark:text-indigo_electric' : 'text-neutral-500'}`}
+            >
+              Regular Collection
+            </button>
+            <button
+              onClick={() => setCollectionTab('comicon')}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${collectionTab === 'comicon' ? 'bg-white dark:bg-[#222] shadow text-purple-600' : 'text-neutral-500'}`}
+            >
+              Comicon Collection
+            </button>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setOnlyUnchecked((v) => !v)}
+            onClick={() => { setOnlyUnchecked((v) => !v); setOnlyVerified(false); }}
             className={`flex items-center gap-2 px-3 py-2 rounded-full border text-sm transition ${
               onlyUnchecked
                 ? 'border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-300'
@@ -143,6 +181,17 @@ export function Wardrobe() {
                 {uncheckedCount}
               </span>
             )}
+          </button>
+          <button
+            onClick={() => { setOnlyVerified((v) => !v); setOnlyUnchecked(false); }}
+            className={`flex items-center gap-2 px-3 py-2 rounded-full border text-sm transition ${
+              onlyVerified
+                ? 'border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                : 'border-lab-border-light dark:border-lab-border bg-white/50 dark:bg-white/[0.03]'
+            }`}
+          >
+            <BadgeCheck className="w-3.5 h-3.5" />
+            Verified
           </button>
           <div className="flex items-center gap-2 px-3 py-2 rounded-full border border-lab-border-light dark:border-lab-border bg-white/50 dark:bg-white/[0.03]">
             <Search className="w-3.5 h-3.5 text-neutral-500" />
@@ -217,6 +266,7 @@ export function Wardrobe() {
                     removeItem(item.id);
                   }
                 }}
+                onMoveToCollection={() => moveToCollection(item.id, (item.collection || 'regular') === 'regular' ? 'comicon' : 'regular')}
               />
             ))}
             {filtered.length === 0 && (
@@ -300,6 +350,7 @@ function Card({
   flash: boolean;
   onVerify: () => void;
   onDelete: () => void;
+  onMoveToCollection: () => void;
 }) {
   const badgeColor =
     item.success_rate >= 90 ? 'bg-emerald-500' :
@@ -367,6 +418,14 @@ function Card({
           title="Archive this item"
         >
           <Trash2 className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onMoveToCollection(); }}
+          className="absolute bottom-3 right-3 w-8 h-8 rounded-full grid place-items-center bg-black/40 backdrop-blur text-white opacity-0 group-hover:opacity-100 transition hover:bg-emerald-500 hover:scale-105"
+          aria-label="Move collection"
+          title="Move between Regular/Comicon"
+        >
+          <Briefcase className="w-3.5 h-3.5" />
         </button>
       </div>
       <div className="p-2 pt-3">

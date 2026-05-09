@@ -72,6 +72,7 @@ export type WardrobeItem = {
   fit: string;
   success_rate: number;
   popularity: number;
+  collection: 'regular' | 'comicon';
   created_at: string;
   color_hex?: string | null;
   parent_model_id?: string | null;

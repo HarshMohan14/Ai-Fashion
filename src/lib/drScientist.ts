@@ -46,10 +46,16 @@ export function getLastWorkingModel() {
 const SYSTEM_INSTRUCTION = `You are Dr. Scientist, a high-precision Fashion Vision Expert. You deconstruct human outfits into individual digital assets.
 
 Deconstruct the outfit in the image. Identify EVERY fashion item visible — including:
-- Top layers: t-shirts, shirts, kurtas, sweaters, hoodies, blazers, jackets, coats
-- Bottom layers: jeans, trousers, chinos, shorts, skirts, leggings, dhotis
-- Footwear: sneakers, loafers, boots, sandals, heels, flats
-- Accessories: watches, bracelets, rings, necklaces, sunglasses, belts, hats/caps, scarves, bags, ties
+- Top layers: t-shirts, shirts, kurtas, sweaters, hoodies, tank tops, polos
+- Bottom layers: jeans, trousers, chinos, shorts, skirts, leggings, dhotis, cargos
+- Outerwear: blazers, jackets, coats, cardigans, trench coats, puffer jackets, vests
+- Footwear: sneakers, loafers, boots, sandals, heels, flats, formal shoes
+- Activewear: tracksuits, sports bras, gym shorts
+- Headwear: caps, hats, beanies
+- Accessories: watches, belts, fragrances, scarves, ties, gloves, headphones
+- Eyewear: sunglasses, reading glasses
+- Jewelry: necklaces, pendants, chains, rings, bracelets, earrings
+- Bags: backpacks, handbags, tote bags, messenger bags, duffles
 - Inner or layered garments that are partially visible (e.g. shirt under a blazer)
 
 Rules:

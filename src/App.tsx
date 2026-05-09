@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { ThemeProvider } from './context/ThemeContext';
 import { DirectorProvider } from './context/DirectorContext';
+import { ExtractionQueueProvider } from './context/ExtractionQueueContext';
 import { DirectorToasts } from './components/DirectorToasts';
+import { ExtractionToaster } from './components/ExtractionToaster';
 import { Shell, SectionKey } from './components/Shell';
 import { Boardroom } from './sections/Boardroom';
 import { Wardrobe } from './sections/Wardrobe';
@@ -22,8 +24,11 @@ export default function App() {
     return (
       <ThemeProvider>
         <DirectorProvider>
+          <ExtractionQueueProvider>
           <DateOrDump />
           <DirectorToasts />
+          <ExtractionToaster />
+        </ExtractionQueueProvider>
         </DirectorProvider>
       </ThemeProvider>
     );
@@ -32,6 +37,7 @@ export default function App() {
   return (
     <ThemeProvider>
       <DirectorProvider>
+          <ExtractionQueueProvider>
         <Shell current={section} onChange={setSection}>
           {section === 'boardroom' && <Boardroom />}
           {section === 'wardrobe' && <Wardrobe />}
@@ -43,7 +49,9 @@ export default function App() {
           {section === 'analytics' && <Analytics />}
         </Shell>
         <DirectorToasts />
-      </DirectorProvider>
+          <ExtractionToaster />
+      </ExtractionQueueProvider>
+        </DirectorProvider>
     </ThemeProvider>
   );
 }

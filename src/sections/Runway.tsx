@@ -70,6 +70,7 @@ export function Runway() {
   const [styleContext, setStyleContext] = useState<string>('');
   const [generationModelIds, setGenerationModelIds] = useState<string[]>([]);
   const [lookModelFilter, setLookModelFilter] = useState<string>('all');
+  const [wardrobeSource, setWardrobeSource] = useState<'regular' | 'comicon'>('regular');
 
   const [progress, setProgress] = useState<BatchProgress>({ running: false, current: 0, total: 0 });
   const [feedbackFor, setFeedbackFor] = useState<GeneratedLook | null>(null);
@@ -119,7 +120,7 @@ export function Runway() {
         setLooks(mergedLooks.map((look) => hydrateLookSnapshot(look, inputs.items)));
       }
 
-      const topwear = inputs.items.filter((i) => i.category?.toLowerCase() === 'topwear' || i.category?.toLowerCase() === 'indian wear');
+      const topwear = inputs.items.filter((i) => (i.category?.toLowerCase() === 'topwear' || i.category?.toLowerCase() === 'indian wear') && (i.collection || 'regular') === wardrobeSource);
       const missing: string[] = [];
       if (!inputs.models.length) missing.push('models');
       else if (!inputs.models.some((m) => isHostedPhotosheetUrl(m.composite_url))) missing.push('hosted model photosheets');
@@ -174,10 +175,12 @@ export function Runway() {
     return null;
   }, [missingInputs, modelsWithPhotosheets.length, selectedGenerationModels.length, styleContext]);
 
+  const filteredItemsForBatch = useMemo(() => items.filter((i) => (i.collection || 'regular') === wardrobeSource), [items, wardrobeSource]);
+
   const runBatch = async () => {
     if (generationBlocker) return;
     const style = styleContext.trim();
-    const perms = buildPermutations(models, items, { count, theme: style, modelFilterIds: generationModelIds });
+    const perms = buildPermutations(models, filteredItemsForBatch, { count, theme: style, modelFilterIds: generationModelIds });
     if (!perms.length) {
       setMissingInputs('could not build any permutations — check the Wardrobe and Model Hub');
       return;
@@ -373,7 +376,17 @@ export function Runway() {
               className="lab-input"
             />
           </ControlField>
-          <ControlField className="md:col-span-2" label="Models selected" icon={<Users className="w-3.5 h-3.5" />}>
+                    <ControlField label="Wardrobe Source" icon={<Bookmark className="w-3.5 h-3.5" />}>
+            <select
+              value={wardrobeSource}
+              onChange={(e) => setWardrobeSource(e.target.value as 'regular' | 'comicon')}
+              className="lab-input appearance-none bg-white dark:bg-[#111]"
+            >
+              <option value="regular">Regular Collection</option>
+              <option value="comicon">Comicon Collection</option>
+            </select>
+          </ControlField>
+          <ControlField className="md:col-span-1" label="Models selected" icon={<Users className="w-3.5 h-3.5" />}>
             <div className="h-11 flex items-center rounded-lg border border-lab-border-light dark:border-lab-border px-3 text-sm text-neutral-700 dark:text-neutral-200">
               {selectedGenerationModels.length} of {modelsWithPhotosheets.length} models
             </div>
