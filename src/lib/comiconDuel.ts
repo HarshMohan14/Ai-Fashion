@@ -414,7 +414,7 @@ export async function generateDateOrDumpResult(
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const signals = summarizeAnswers(answers, timeoutCount);
     const bannedLabel = fallback.title === 'Rajma Chawal Boy' ? 'Rajma Chawal Boy' : '';
-    const result = await model.generateContent(`
+    const resultPromise = model.generateContent(`
 You are writing the final result card for a mobile fashion game called Date or Dump.
 Audience: young women rating men's outfit taste.
 Tone: Otaku / anime fan terminology, playful, premium, non-toxic. Do not insult the men.
@@ -439,6 +439,8 @@ Return ONLY compact JSON:
 Signals:
 ${JSON.stringify(signals, null, 2)}
     `.trim());
+    const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error('Gemini timeout')), 2500));
+    const result = await Promise.race([resultPromise, timeoutPromise]);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(text) as Partial<DateOrDumpResult>;
     return {

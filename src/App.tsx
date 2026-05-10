@@ -14,21 +14,25 @@ import { Runway } from './sections/Runway';
 import { Looks } from './sections/Looks';
 import { Analytics } from './sections/Analytics';
 import { DateOrDump } from './sections/DateOrDump';
+import { ComiconDuel } from './sections/ComiconDuel';
 
 export default function App() {
   const [section, setSection] = useState<SectionKey>('boardroom');
   const isGameRoute = typeof window !== 'undefined'
     && window.location.pathname.replace(/\/+$/, '') === '/game';
+  
+  const isComiconRoute = typeof window !== 'undefined'
+    && window.location.pathname.replace(/\/+$/, '') === '/comicon';
 
-  if (isGameRoute) {
+  if (isGameRoute || isComiconRoute) {
     return (
       <ThemeProvider>
         <DirectorProvider>
           <ExtractionQueueProvider>
-          <DateOrDump />
-          <DirectorToasts />
-          <ExtractionToaster />
-        </ExtractionQueueProvider>
+            {isGameRoute ? <DateOrDump /> : <ComiconDuel />}
+            <DirectorToasts />
+            <ExtractionToaster />
+          </ExtractionQueueProvider>
         </DirectorProvider>
       </ThemeProvider>
     );

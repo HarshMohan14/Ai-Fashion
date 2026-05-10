@@ -30,7 +30,7 @@ const REVEAL_DELAY_MS = 900;
 const ROUND_TIME_SECONDS = 10;
 
 type Phase = 'loading' | 'landing' | 'playing' | 'result';
-type DateOrDumpResultCardId = 'papa' | 'gym' | 'soft';
+type DateOrDumpResultCardId = string;
 
 type DateOrDumpResultCardConfig = {
   id: DateOrDumpResultCardId;
@@ -49,16 +49,39 @@ function getPlayableModelsForLooks(
     .filter((model) => model.runway_count >= 2);
 }
 
-const DATE_OR_DUMP_RESULT_CARD_LIST: DateOrDumpResultCardConfig[] = [
-  { id: 'papa', src: '/comicon/isekai-drip.png', alt: 'Papa Ki Pari Picker result card' },
-  { id: 'gym', src: '/date-or-dump/gym-bro-survivor.png', alt: 'Gym Bro Survivor result card' },
-  { id: 'soft', src: '/date-or-dump/soft-boy-magnet.png', alt: 'Soft Boy Magnet result card' },
-];
+const DATE_OR_DUMP_RESULT_CARD_LIST: DateOrDumpResultCardConfig[] = Array.from({ length: 16 }).map((_, i) => ({
+  id: `share-${i + 1}`,
+  src: `/share-cards/share-${i + 1}.png`,
+  alt: `Share Card ${i + 1}`,
+}));
 
 const DATE_OR_DUMP_RESULT_CARDS = DATE_OR_DUMP_RESULT_CARD_LIST.reduce(
   (cards, card) => ({ ...cards, [card.id]: card }),
   {} as Record<DateOrDumpResultCardId, DateOrDumpResultCardConfig>,
 );
+
+function getNextRandomCardId(): string {
+  if (typeof window === 'undefined') return 'share-1';
+  const key = 'dfb_available_share_cards_comicon';
+  let available: string[] = [];
+  try {
+    available = JSON.parse(window.localStorage.getItem(key) || '[]');
+  } catch {}
+
+  if (!available || available.length === 0) {
+    available = DATE_OR_DUMP_RESULT_CARD_LIST.map((c) => c.id);
+    for (let i = available.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [available[i], available[j]] = [available[j], available[i]];
+    }
+  }
+
+  const nextCardId = available.pop() || 'share-1';
+  try {
+    window.localStorage.setItem(key, JSON.stringify(available));
+  } catch {}
+  return nextCardId;
+}
 
 export function ComiconDuel() {
   const anonymousPlayerId = useMemo(() => getDateOrDumpAnonymousPlayerId(), []);
@@ -70,6 +93,7 @@ export function ComiconDuel() {
   const [selectedSide, setSelectedSide] = useState<DateOrDumpSide | null>(null);
   const [roseSide, setRoseSide] = useState<DateOrDumpSide | null>(null);
   const [result, setResult] = useState<DateOrDumpResult | null>(null);
+  const [resultCardId, setResultCardId] = useState<string | null>(null);
   const [resultLoading, setResultLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -176,6 +200,7 @@ export function ComiconDuel() {
     playSound('result');
     try {
       const generated = await generateDateOrDumpResult(finalAnswers, finalTimedOutCount);
+      setResultCardId(getNextRandomCardId());
       setResult(generated);
       if (sessionId) {
         await completeDateOrDumpSession({
@@ -327,8 +352,8 @@ export function ComiconDuel() {
   }, []);
 
   const shareResult = async () => {
-    if (!result) return;
-    const card = DATE_OR_DUMP_RESULT_CARDS[pickDateOrDumpResultCard(result, answers)];
+    if (!result || !resultCardId) return;
+    const card = DATE_OR_DUMP_RESULT_CARDS[resultCardId];
     const text = buildDateOrDumpShareCaption(result, answers);
     try {
       const file = await posterImageFile(card);
@@ -394,6 +419,7 @@ export function ComiconDuel() {
         {phase === 'result' && (
           <ResultScreen
             result={result}
+            resultCardId={resultCardId}
             loading={resultLoading}
             answers={answers}
             onPlayAgain={playAgain}
@@ -433,8 +459,8 @@ function LandingScreen({
     <div className="-mx-5 -my-5 relative flex min-h-[100dvh] flex-1 items-center justify-center overflow-hidden bg-black">
       <div className="relative aspect-[941/1672] w-full max-w-[430px]">
         <motion.img
-          src="/date-or-dump/home-date-or-dump.png"
-          alt="Date or Dump home screen"
+          src="/comicon/home-comicon.png?v=2"
+          alt="Date or Dump Comic Con Edition home screen"
           className="absolute inset-0 h-full w-full object-contain"
           initial={{ opacity: 0, scale: 1.015 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -596,12 +622,14 @@ const RESULT_LOADING_TEXTS = [
 
 function ResultScreen({
   result,
+  resultCardId,
   loading,
   answers,
   onPlayAgain,
   onShare,
 }: {
   result: DateOrDumpResult | null;
+  resultCardId: string | null;
   loading: boolean;
   answers: DateOrDumpAnswer[];
   onPlayAgain: () => void;
@@ -662,7 +690,8 @@ function ResultScreen({
               transition={{ duration: 0.9, ease: 'easeOut' }}
             >
               {(() => {
-                const card = DATE_OR_DUMP_RESULT_CARDS[pickDateOrDumpResultCard(result, answers)];
+                const card = resultCardId ? DATE_OR_DUMP_RESULT_CARDS[resultCardId] : null;
+                if (!card) return null;
                 return (
                   <>
                     <img
@@ -986,26 +1015,7 @@ function RoseBurst() {
   );
 }
 
-function pickDateOrDumpResultCard(
-  result: DateOrDumpResult,
-  answers: DateOrDumpAnswer[],
-): DateOrDumpResultCardId {
-  const seed = [
-    result.title,
-    result.archetype,
-    result.summary,
-    result.tags.join(' '),
-    ...answers.flatMap((answer) => [
-      answer.winner.id,
-      answer.winnerSide,
-      String(answer.responseMs),
-      answer.winner.theme,
-      ...answer.winner.item_snapshot.map((item) => `${item.name} ${item.category}`),
-    ]),
-  ].join('|');
-  const hash = stableHash(seed);
-  return DATE_OR_DUMP_RESULT_CARD_LIST[hash % DATE_OR_DUMP_RESULT_CARD_LIST.length].id;
-}
+
 
 function buildDateOrDumpShareCaption(result: DateOrDumpResult, answers: DateOrDumpAnswer[]) {
   const pickedLooks = answers.map((answer) => answer.winner);
