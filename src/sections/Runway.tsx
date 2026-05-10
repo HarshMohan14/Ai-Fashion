@@ -4,7 +4,6 @@ import {
   Sparkles,
   Wand2,
   Users,
-  Palette,
   Hash,
   Loader2,
   Check,
@@ -67,7 +66,6 @@ export function Runway() {
   const [items, setItems] = useState<WardrobeItem[]>([]);
 
   const [count, setCount] = useState<number>(5);
-  const [styleContext, setStyleContext] = useState<string>('');
   const [generationModelIds, setGenerationModelIds] = useState<string[]>([]);
   const [lookModelFilter, setLookModelFilter] = useState<string>('all');
   const [wardrobeSource, setWardrobeSource] = useState<'regular' | 'comicon'>('regular');
@@ -139,7 +137,7 @@ export function Runway() {
     } finally {
       setLoading(false);
     }
-  }, [push]);
+  }, [push, wardrobeSource]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
@@ -169,18 +167,16 @@ export function Runway() {
 
   const generationBlocker = useMemo(() => {
     if (missingInputs) return `Missing inputs: ${missingInputs}. Seed the Wardrobe and Model Hub before generating looks.`;
-    if (!styleContext.trim()) return 'Add a style context before generating looks.';
     if (modelsWithPhotosheets.length === 0) return 'Upload or backfill a hosted model photosheet first.';
     if (selectedGenerationModels.length === 0) return 'Select at least one model for this batch.';
     return null;
-  }, [missingInputs, modelsWithPhotosheets.length, selectedGenerationModels.length, styleContext]);
+  }, [missingInputs, modelsWithPhotosheets.length, selectedGenerationModels.length]);
 
   const filteredItemsForBatch = useMemo(() => items.filter((i) => (i.collection || 'regular') === wardrobeSource), [items, wardrobeSource]);
 
   const runBatch = async () => {
     if (generationBlocker) return;
-    const style = styleContext.trim();
-    const perms = buildPermutations(models, filteredItemsForBatch, { count, theme: style, modelFilterIds: generationModelIds });
+    const perms = buildPermutations(models, filteredItemsForBatch, { count, modelFilterIds: generationModelIds });
     if (!perms.length) {
       setMissingInputs('could not build any permutations — check the Wardrobe and Model Hub');
       return;
@@ -188,12 +184,16 @@ export function Runway() {
     setProgress({ running: true, current: 0, total: perms.length, current_model: perms[0].model.nickname });
     let generated = 0;
     let failed = 0;
+    let previousPoseLabel: string | null = null;
+    let previousPoseFamily: string | null = null;
     for (let i = 0; i < perms.length; i++) {
       const p = perms[i];
       setProgress({ running: true, current: i, total: perms.length, current_model: p.model.nickname });
       try {
-        const look = await generateLook(p);
+        const look = await generateLook(p, undefined, undefined, { previousPoseLabel, previousPoseFamily });
         setLooks((prev) => [look, ...prev]);
+        previousPoseLabel = look.theme || previousPoseLabel;
+        previousPoseFamily = look.pose_family || previousPoseFamily;
         generated += 1;
       } catch (e) {
         console.error(e);
@@ -210,7 +210,7 @@ export function Runway() {
     if (generated > 0) {
       push(
         'Dr. Stylist',
-        `Generated ${generated} composed runway look${generated === 1 ? '' : 's'} using your style context.${failed ? ` ${failed} failed and were not saved.` : ' Review drafts in the Runway and approve for DFB.'}`,
+        `Generated ${generated} composed runway look${generated === 1 ? '' : 's'} with backend-selected standing poses and facial expressions.${failed ? ` ${failed} failed and were not saved.` : ' Review drafts in the Runway and approve for DFB.'}`,
       );
     } else if (failed > 0) {
       push(
@@ -306,7 +306,7 @@ export function Runway() {
 
     setProgress({ running: true, current: 0, total: 1, current_model: model.nickname });
     try {
-      const fresh = await generateLook(perm, undefined, feedbackSummary);
+      const fresh = await generateLook(perm, undefined, feedbackSummary, { continuityPoseLabel: look.theme });
       setLooks((prev) => [fresh, ...prev]);
       await supabase.from('runway_looks').update({ status: 'in_review', feedback: feedbackSummary }).eq('id', look.id);
       setLooks((prev) => prev.map((l) => (l.id === look.id ? { ...l, status: 'in_review', feedback: feedbackSummary } : l)));
@@ -338,7 +338,7 @@ export function Runway() {
           <h1 className="section-title mt-2">Runway</h1>
           <p className="text-sm text-neutral-600 dark:text-neutral-400 mt-1.5 max-w-xl">
             Dr. Stylist uses the uploaded 5-angle model photosheet as the identity reference, combines it
-            with wardrobe garments, and follows your written style context for the final editorial frame.
+            with wardrobe garments, and chooses the standing pose plus facial expression for the final runway frame.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -358,14 +358,6 @@ export function Runway() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <ControlField className="md:col-span-4" label="Style context" icon={<Palette className="w-3.5 h-3.5" />}>
-            <textarea
-              value={styleContext}
-              onChange={(e) => setStyleContext(e.target.value)}
-              placeholder="e.g. rooftop dinner in Mumbai, black linen eveningwear mood, warm cinematic lighting, confident editorial stance"
-              className="lab-input min-h-[96px] resize-y"
-            />
-          </ControlField>
           <ControlField label="Permutations" icon={<Hash className="w-3.5 h-3.5" />}>
             <input
               type="number"
@@ -767,7 +759,7 @@ function LookCard({
         </div>
 
         <div className="absolute inset-x-0 bottom-0 p-3 pb-2 bg-gradient-to-t from-black/85 via-black/50 to-transparent text-white pr-24">
-          <div className="text-[10px] uppercase tracking-[0.22em] text-white/70 line-clamp-1">{look.theme || 'Style context'}</div>
+          <div className="text-[10px] uppercase tracking-[0.22em] text-white/70 line-clamp-1">{look.theme || 'Stylist pose'}</div>
           <div className="font-display text-lg leading-tight mt-0.5">{modelName || 'Model'}</div>
           <div className="text-[11px] text-white/70 mt-0.5 line-clamp-1">
             {look.item_snapshot.map((s) => s.name).join(' · ')}
@@ -987,7 +979,7 @@ function Lightbox({ look, onClose }: { look: GeneratedLook; onClose: () => void 
         </div>
         <div className="bento space-y-3 max-h-[80vh] overflow-y-auto">
           <div>
-            <div className="eyebrow">Style Context</div>
+            <div className="eyebrow">Stylist Pose</div>
             <div className="font-display text-xl mt-0.5">{look.theme}</div>
           </div>
           <div>

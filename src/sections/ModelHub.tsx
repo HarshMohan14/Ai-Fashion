@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, Upload, X, Users, Check, Loader2, Trash2, FileImage, Sparkles } from 'lucide-react';
 import { supabase } from '../lib/supabase';
@@ -150,6 +150,7 @@ function AddModelDrawer({
 }) {
   const [files, setFiles] = useState<{ front: File | null; side: File | null; back: File | null; closeup: File | null; left: File | null; right: File | null }>({ front: null, side: null, back: null, closeup: null, left: null, right: null });
   const [previews, setPreviews] = useState<{ front: string | null; side: string | null; back: string | null; closeup: string | null; left: string | null; right: string | null }>({ front: null, side: null, back: null, closeup: null, left: null, right: null });
+  const previewsRef = useRef(previews);
   const [nickname, setNickname] = useState('');
   const [physicalDescription, setPhysicalDescription] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -158,10 +159,14 @@ function AddModelDrawer({
   const director = useDirector();
 
   useEffect(() => {
-    return () => {
-      Object.values(previews).forEach((url) => { if (url) URL.revokeObjectURL(url); });
-    };
+    previewsRef.current = previews;
   }, [previews]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(previewsRef.current).forEach((url) => { if (url) URL.revokeObjectURL(url); });
+    };
+  }, []);
 
   const onPick = (key: keyof typeof files, file: File) => {
     if (!file.type.startsWith('image/')) {
@@ -169,14 +174,22 @@ function AddModelDrawer({
       return;
     }
     const previewUrl = URL.createObjectURL(file);
-    setPreviews(p => ({ ...p, [key]: previewUrl }));
+    setPreviews((current) => {
+      const previousUrl = current[key];
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      return { ...current, [key]: previewUrl };
+    });
     setFiles(f => ({ ...f, [key]: file }));
     setError(null);
   };
 
   const clearSheet = (key: keyof typeof files) => {
     setFiles(f => ({ ...f, [key]: null }));
-    setPreviews(p => ({ ...p, [key]: null }));
+    setPreviews((current) => {
+      const previousUrl = current[key];
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      return { ...current, [key]: null };
+    });
   };
 
   const analyzeBody = async () => {

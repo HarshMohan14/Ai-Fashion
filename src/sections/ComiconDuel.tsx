@@ -6,7 +6,6 @@ import {
   Gem,
   Heart,
   Loader2,
-  Plus,
   Zap,
 } from 'lucide-react';
 import { useDirector } from '../context/DirectorContext';

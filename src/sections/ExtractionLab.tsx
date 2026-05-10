@@ -1,10 +1,9 @@
 import { useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Upload, Layers, Zap, CheckCircle2, FlaskConical, Wand2, StickyNote, Trash2, AlertCircle, ArrowRight, RefreshCw, Sparkles, PackageCheck, Check, ShieldCheck, ChevronRight, RotateCcw, Package
+  Upload, Layers, Zap, CheckCircle2, FlaskConical, Wand2, Trash2, RefreshCw, Sparkles, PackageCheck, ShieldCheck, ChevronRight, RotateCcw, Package
 } from 'lucide-react';
 import { hasGeminiKey, type ExtractedItem } from '../lib/drScientist';
-import { supabase } from '../lib/supabase';
 import { useExtractionQueue } from '../context/ExtractionQueueContext';
 import { LabItem } from '../lib/extractionUtils';
 
@@ -12,10 +11,9 @@ const BLUEPRINT = '#22D3EE';
 type Stage = 'idle' | 'scanning' | 'review' | 'rerender' | 'verify' | 'packaging' | 'done';
 
 export function ExtractionLab() {
-  const { jobs, addJob, updateJob, updateJobItem, removeJobItem, startRendering, dismissJob, dispatchItem, regenerateItem } = useExtractionQueue();
+  const { jobs, addJob, updateJobItem, removeJobItem, startRendering, dismissJob, dispatchItem, regenerateItem } = useExtractionQueue();
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [notes, setNotes] = useState('');
   const [refineMode, setRefineMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -28,9 +26,6 @@ export function ExtractionLab() {
     activeJob.status === 'dispatched' ? 'done' : 'idle';
   const imageSrc = activeJob?.originalImageSrc || null;
   const items = activeJob?.items || [];
-  const mocked = activeJob?.mocked || false;
-  const activeModel = activeJob?.model || null;
-  const error = activeJob?.error || null;
 
   const handleFiles = (file: File) => {
     addJob(file);
@@ -46,7 +41,6 @@ export function ExtractionLab() {
   const reset = () => {
     setActiveJobId(null);
     setSelectedId(null);
-    setNotes('');
     setRefineMode(false);
   };
 
@@ -64,10 +58,6 @@ export function ExtractionLab() {
       startRendering(activeJob.id);
       setActiveJobId(null); // Return to dashboard
     }
-  };
-
-  const saveNotes = async () => {
-    // Optional
   };
 
   const selected = items.find((i) => i.id === selectedId) ?? null;
@@ -181,7 +171,7 @@ export function ExtractionLab() {
             )}
           </div>
 
-          {activeJobId && (
+          {activeJob && (
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <button
                 onClick={() => setRefineMode((r) => !r)}
@@ -280,7 +270,7 @@ export function ExtractionLab() {
                 )}
               </div>
             </div>
-          ) : (
+          ) : activeJob ? (
             <>
               {selected && (stage === 'verify' || stage === 'done') && (
                 <VerifyCard
@@ -329,7 +319,7 @@ export function ExtractionLab() {
                 </div>
               </div>
             </>
-          )}
+          ) : null}
         </div>
       </div>
     </div>
@@ -429,17 +419,6 @@ function VerifyCard({
       </div>
     </div>
   );
-}
-
-function formatModelName(id: string): string {
-  const map: Record<string, string> = {
-    'gemini-2.5-flash': 'Gemini 2.5 Flash',
-    'gemini-2.0-flash': 'Gemini 2.0 Flash',
-    'gemini-flash-latest': 'Gemini Flash',
-    'gemini-2.5-flash-image': 'Gemini 2.5 (Nano Banana)',
-    'gemini-3.1-flash-image-preview': 'Gemini 3.1 Flash Image',
-  };
-  return map[id] ?? id;
 }
 
 function RefinePanel({

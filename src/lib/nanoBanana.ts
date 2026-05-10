@@ -131,7 +131,7 @@ type FaceSwapProvider = 'replicate' | 'none';
 type ReplicateFaceModel = 'flux-pulid' | 'codeplugtech';
 type RunwayCardLayoutValidation = { ok: boolean; issues: string[] };
 
-export const RUNWAY_CARD_FORMAT_PROMPT = `FIXED RUNWAY CARD OUTPUT FORMAT: Generate the final image as a true vertical 9:16 portrait bitmap. The entire returned image must be this 9:16 studio card directly, not a square or landscape image and not a 9:16 page containing a smaller rectangular photo. Show one centered full-body model from head to toe with feet visible, standing on a clean white round pedestal in a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow. Keep narrow side margins and make the model plus pedestal fit naturally inside the 9:16 frame. Use a stylish outfit-aware fashion pose while preserving exact body proportions. No crop, no inset photo, no inner rectangle, no border, no frame, no poster, no screenshot-within-image.`;
+export const RUNWAY_CARD_FORMAT_PROMPT = `FIXED RUNWAY CARD OUTPUT FORMAT: Generate the final image as a true vertical 9:16 portrait bitmap. The entire returned image must be this 9:16 studio card directly, not a square or landscape image and not a 9:16 page containing a smaller rectangular photo. Show one centered full-body model standing from head to toe with feet visible on a clean white round pedestal in a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow. The pedestal must support only standing poses, but standing poses may be dynamic: wide planted stance, one foot forward, strong torso twist, arm foreshortening, jacket or hair motion cues, shoulder/hip asymmetry, and expressive facial direction. Do not make the model seated, kneeling, crouched, lying down, jumping, or in a floor hero-landing pose. Do not use neutral passport stance, straight vertical posture, arms hanging symmetrically, mannequin pose, T-pose, stiff catalog pose, or standing dead straight. Keep narrow side margins and make the model plus pedestal fit naturally inside the 9:16 frame. Use the backend-selected dynamic standing pose and matching facial expression while preserving exact body proportions and full outfit readability; no pose may hide major garments or crop limbs. No crop, no inset photo, no inner rectangle, no border, no frame, no poster, no screenshot-within-image.`;
 
 const REPLICATE_FLUX_PULID_VERSION = '8baa7ef2255075b46f4d91cd238c21d31181b3e6a864463f967960bb0112525b';
 const REPLICATE_CODEPLUGTECH_FACE_SWAP_VERSION = '278a81e7ebb22db98bcba54de985d22cc1abeead2754eb1f2af717247be69b34';
@@ -244,8 +244,9 @@ export async function renderLook(input: LookRenderInput): Promise<LookRenderResu
   try {
     const model = genAI.getGenerativeModel({ model: GEMINI_IMAGE_MODEL });
     let attempts = 0;
-    const maxAttempts = 3; // Initial attempt + one layout redraw + one garment redraw.
+    const maxAttempts = 4; // Initial attempt + one layout redraw + one dynamic-pose redraw + one garment redraw.
     let layoutRedrawUsed = false;
+    let poseRedrawUsed = false;
     let garmentRedrawUsed = false;
     let currentPrompt = withRunwayCardFormat(input.prompt);
 
@@ -294,6 +295,31 @@ Regenerate as one direct 9:16 portrait studio image. Do not place the model insi
           continue;
         }
         throw new Error(`Generated runway image failed fixed 9:16 card validation: ${layoutValidation.issues.join('; ')}`);
+      }
+
+      if (attempts < maxAttempts) {
+        if (import.meta.env.DEV) console.log(`[Dr. Stylist] Critiquing dynamic pose attempt ${attempts}...`);
+        const criticModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const generatedImagePart: GeminiImagePart = dataUrlToReferencePart(baseGeneratedImage, 'generated-runway');
+        const poseCritiqueText = await critiqueDynamicStandingPose(criticModel, generatedImagePart);
+
+        if (import.meta.env.DEV) {
+          console.log(`[Dr. Stylist] Dynamic Pose Critique Result: ${poseCritiqueText}`);
+        }
+
+        const poseFlaws = parseCritiqueFlaws(poseCritiqueText);
+
+        if (!critiqueIsPerfect(poseCritiqueText) && !poseRedrawUsed) {
+          poseRedrawUsed = true;
+          if (import.meta.env.DEV) console.log('[Dr. Stylist] Image failed dynamic pose critique. Redrawing...');
+          currentPrompt = withRunwayCardFormat(`${input.prompt}
+
+CRITICAL DYNAMIC POSE CORRECTION BASED ON PREVIOUS FAILED ATTEMPT:
+Pose flaws to fix: ${poseFlaws || 'Pose was too static or mannequin-like.'}
+Regenerate with a dynamic anime-fashion standing pose while preserving the same model identity and exact wardrobe. The model must not stand dead straight. Include visible S-line or curved line of action, non-parallel shoulder and hip angles, clear weight shift, one foot forward or wide planted stance, torso twist, active arms or purposeful hands, head angle, and expressive face. Keep both feet visible on the white pedestal, preserve full outfit readability, and do not crop limbs.`);
+          baseGeneratedImage = '';
+          continue;
+        }
       }
 
       if (attempts < maxAttempts && referenceParts.length > 0) {
@@ -426,7 +452,7 @@ function buildFluxPulidRunwayPrompt(runwayPrompt: string) {
 
 ${RUNWAY_CARD_FORMAT_PROMPT}
 
-Use the provided main_face_image as the exact face identity reference. Generate one vertical 9:16 full-body neutral white studio runway photograph of the same person wearing the described outfit. The person must stand centered on a clean white round pedestal inside a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow. Use a stylish outfit-aware fashion pose that suits the clothing, not a stiff passport-photo stance, while preserving exact body proportions and full garment visibility. Preserve the face identity, natural skin texture, body type, hair, complexion, full outfit visibility, garment colors, garment cuts, and garment patterns. Do not create a portrait crop; show the complete body and outfit from head to toe with feet visible. Do not create an inset photo, inner rectangle, border, frame, poster, print, or screenshot-within-image.`.slice(0, 2800);
+Use the provided main_face_image as the exact face identity reference. Generate one vertical 9:16 full-body neutral white studio runway photograph of the same person wearing the described outfit. The person must be centered standing on a clean white round pedestal inside a seamless white photo studio with soft diffused studio lighting and a subtle floor shadow. Follow the backend-selected dynamic standing pose and facial-expression direction from the runway prompt while preserving exact body proportions and full garment visibility. Preserve the face identity, natural skin texture, body type, hair, complexion, full outfit visibility, garment colors, garment cuts, and garment patterns. Allow wide planted stance, one foot forward, strong torso twist, arm foreshortening, jacket or hair motion cues, shoulder/hip asymmetry, and expressive facial direction. Do not create a seated, kneeling, crouched, jumping, static straight standing, arms-down, mannequin-like, or floor hero-landing pose. Do not create a portrait crop; show the complete body and outfit from head to toe with feet visible. Do not create an inset photo, inner rectangle, border, frame, poster, print, or screenshot-within-image.`.slice(0, 2800);
 }
 
 async function runReplicateCodeplugtechFaceSwap(
@@ -515,6 +541,33 @@ FLAWS:
       },
     ]),
     'Garment critique',
+  );
+  return result.response.text().trim();
+}
+
+async function critiqueDynamicStandingPose(
+  criticModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']>,
+  generatedImagePart: GeminiImagePart,
+) {
+  const result = await generateGeminiContentWithRetry(
+    () => criticModel.generateContent([
+      { text: 'Here is the generated runway image to evaluate for dynamic standing pose quality:' },
+      toGeminiImagePart(generatedImagePart),
+      {
+        text: `You are a dynamic fashion pose critic. Evaluate only the model's pose and facial expression.
+Reply exactly PERFECT only if all conditions are true:
+- The person is standing, full body, on/over the pedestal with head and feet visible.
+- The pose is dynamic anime-fashion standing, not stiff or static.
+- The body has visible line of action or S-curve, non-parallel shoulders/hips or torso twist, clear weight shift, active arms or purposeful hands, and an expressive face.
+- The pose is not front-facing dead straight, not neutral passport stance, not arms hanging symmetrically, not mannequin-like, not T-pose, not seated, not kneeling, not crouched, not jumping, and not a floor hero landing.
+
+If anything is wrong, reply:
+FLAWS:
+- concise pose flaw
+- another pose flaw`,
+      },
+    ]),
+    'Dynamic standing pose critique',
   );
   return result.response.text().trim();
 }

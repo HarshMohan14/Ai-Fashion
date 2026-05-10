@@ -6,6 +6,7 @@ import {
   RUNWAY_CARD_FORMAT_PROMPT,
   toGeminiImagePart,
   type GeminiApiImagePart,
+  type GeminiImagePart,
 } from './nanoBanana';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import {
@@ -55,6 +56,7 @@ export type GeneratedLook = {
   image_url: string;
   status: string;
   theme: string;
+  pose_family?: string;
   model_id: string;
   item_ids: string[];
   item_snapshot: Array<{ id: string; name: string; image: string; category: string }>;
@@ -105,10 +107,39 @@ export async function fetchStylistInputs() {
 
 export type BatchOptions = {
   count: number;
-  theme: string;
+  theme?: string;
   modelFilter?: string; // legacy: 'all' or a specific model id
   modelFilterIds?: string[];
 };
+
+export type GenerateLookOptions = {
+  previousPoseLabel?: string | null;
+  previousPoseFamily?: string | null;
+  continuityPoseLabel?: string | null;
+};
+
+type PoseSynthesis = {
+  pose_label: string;
+  pose_family: string;
+  pose_directive: string;
+  image_prompt: string;
+};
+
+const FALLBACK_POSE_LABEL = 'Dynamic stylist pose';
+const FALLBACK_POSE_FAMILY = 'Anime-fashion power contrapposto';
+const FALLBACK_POSE_DIRECTIVE =
+  'Anime-fashion power contrapposto standing pose on the white pedestal: wide planted stance, visible S-line action through the body, tilted shoulders and hips, torso twist, one active arm with purposeful hand shape, head angled toward camera, and a focused expressive face.';
+
+const DYNAMIC_POSE_MARKERS = [
+  'curved or S-line action through the body',
+  'non-parallel shoulder and hip angles',
+  'clear weight shift',
+  'one foot forward or wide planted stance',
+  'torso twist or three-quarter body angle',
+  'active arms or purposeful hands',
+  'head angle',
+  'intense gaze or matching facial expression',
+];
 
 function isHostedPhotosheetUrl(url: string | null | undefined): url is string {
   return /^https?:\/\//i.test(url?.trim() ?? '');
@@ -182,7 +213,17 @@ export function buildPermutations(
     const bag = bags.length && rng() > 0.6 ? pick(bags, rng) : null;
     const hw = headwear.length && rng() > 0.5 ? pick(headwear, rng) : null;
     if (!top && !outr) continue;
-    out.push({ model, topwear: top, bottomwear: bottom, outerwear: outr, footwear: shoe, accessory: acc, bag: bag, headwear: hw, theme: opts.theme });
+    out.push({
+      model,
+      topwear: top,
+      bottomwear: bottom,
+      outerwear: outr,
+      footwear: shoe,
+      accessory: acc,
+      bag,
+      headwear: hw,
+      theme: opts.theme ?? '',
+    });
   }
   return out;
 }
@@ -204,7 +245,7 @@ export function buildPrompt(
   seed: number = Date.now(),
 ): string {
   void seed;
-  const styleContext = p.theme.trim();
+  const continuityPose = p.theme.trim();
   const physicalDescription = p.model.physical_description?.trim();
   const parts: string[] = [];
   parts.push(
@@ -225,9 +266,10 @@ export function buildPrompt(
   parts.push(
     "The topwear must be worn on the upper body, bottomwear (if any) on the lower body, footwear (if any) on the feet, and accessories worn naturally as part of the outfit."
   );
-  if (styleContext) {
-    parts.push(`User style context: ${styleContext}. Use this only to clarify garment coordination or outfit intent; never use it to change the person's identity, body, pose, or white studio background.`);
+  if (continuityPose) {
+    parts.push(`Stored pose continuity hint: ${continuityPose}. Keep this standing pose direction only if the revision feedback does not ask for a different pose or expression.`);
   }
+  parts.push(`Dr. Stylist must choose a dynamic anime-fashion standing pose and matching facial expression from broad fashion-pose knowledge, guided by the selected garments and model references. The pose must include at least four dynamic markers such as ${DYNAMIC_POSE_MARKERS.join(', ')}. Never use neutral passport stance, straight vertical posture, arms hanging symmetrically, mannequin pose, T-pose, or standing dead straight.`);
   parts.push(RUNWAY_CARD_FORMAT_PROMPT);
   if (feedback) parts.push(`Revision: ${feedback}.`);
   return parts.join(' ');
@@ -237,10 +279,203 @@ export function compileRagKnowledge(model: StylistModel) {
   return formatRagKnowledgeForPrompt(model.rag_feedback ?? []);
 }
 
+function selectedWardrobeItems(p: Permutation) {
+  return [
+    p.topwear,
+    p.bottomwear,
+    p.outerwear,
+    p.footwear,
+    p.accessory,
+    p.bag,
+    p.headwear,
+  ].filter((item): item is WardrobeItem => Boolean(item));
+}
+
+function describeWardrobeForPrompt(p: Permutation) {
+  const items = selectedWardrobeItems(p);
+  if (!items.length) return 'No wardrobe item metadata is available; rely on garment reference images.';
+  return items.map((item) => {
+    const details = [
+      item.category,
+      item.subcategory,
+      item.fabric,
+      item.fit,
+      item.color_hex ? `color ${item.color_hex}` : '',
+    ].filter(Boolean).join(', ');
+    return `${item.name}${details ? ` (${details})` : ''}`;
+  }).join('; ');
+}
+
+function normalizePoseLabel(label: string | null | undefined) {
+  return (label ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function samePoseLabel(a: string | null | undefined, b: string | null | undefined) {
+  const left = normalizePoseLabel(a);
+  const right = normalizePoseLabel(b);
+  return Boolean(left && right && left === right);
+}
+
+function cleanPoseLabel(value: unknown) {
+  const label = typeof value === 'string' ? value.trim() : '';
+  if (!label) return FALLBACK_POSE_LABEL;
+  return label.replace(/^["']|["']$/g, '').slice(0, 64);
+}
+
+function cleanPoseFamily(value: unknown) {
+  const family = typeof value === 'string' ? value.trim() : '';
+  if (!family) return FALLBACK_POSE_FAMILY;
+  return family.replace(/^["']|["']$/g, '').slice(0, 64);
+}
+
+function parsePoseSynthesis(rawText: string): PoseSynthesis | null {
+  const fenced = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+  const raw = (fenced ?? rawText).trim();
+  const candidates = [raw];
+  const firstBrace = raw.indexOf('{');
+  const lastBrace = raw.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(raw.slice(firstBrace, lastBrace + 1));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as Partial<PoseSynthesis>;
+      const imagePrompt = typeof parsed.image_prompt === 'string' ? parsed.image_prompt.trim() : '';
+      if (!imagePrompt) continue;
+      return {
+        pose_label: cleanPoseLabel(parsed.pose_label),
+        pose_family: cleanPoseFamily(parsed.pose_family),
+        pose_directive: typeof parsed.pose_directive === 'string' && parsed.pose_directive.trim()
+          ? parsed.pose_directive.trim()
+          : FALLBACK_POSE_DIRECTIVE,
+        image_prompt: imagePrompt,
+      };
+    } catch {
+      // Try the next candidate shape.
+    }
+  }
+
+  return null;
+}
+
+function fallbackPoseSynthesis(wardrobeSummary: string): PoseSynthesis {
+  return {
+    pose_label: FALLBACK_POSE_LABEL,
+    pose_family: FALLBACK_POSE_FAMILY,
+    pose_directive: FALLBACK_POSE_DIRECTIVE,
+    image_prompt: `Create one photorealistic full-body fashion runway photograph of the exact same model wearing the selected wardrobe garments: ${wardrobeSummary}. Preserve every garment reference exactly in color, pattern, cut, texture, placement, and fit. Use an anime-fashion power contrapposto standing pose on the white round pedestal: wide planted stance, visible S-line action, shoulder and hip asymmetry, torso twist, one active arm, purposeful hand shape, head angle, and focused expressive face. Do not use a neutral straight standing posture.`,
+  };
+}
+
+async function synthesizeRunwayPosePrompt({
+  genAI,
+  referenceParts,
+  modelUrls,
+  modelLabels,
+  physicalDescription,
+  wardrobeSummary,
+  ragKnowledgeText,
+  feedback,
+  continuityPoseLabel,
+  previousPoseLabel,
+  previousPoseFamily,
+}: {
+  genAI: GoogleGenerativeAI;
+  referenceParts: Array<{ index: number; sourceUrl: string; part: GeminiImagePart }>;
+  modelUrls: string[];
+  modelLabels: string[];
+  physicalDescription?: string;
+  wardrobeSummary: string;
+  ragKnowledgeText: string;
+  feedback?: string;
+  continuityPoseLabel?: string | null;
+  previousPoseLabel?: string | null;
+  previousPoseFamily?: string | null;
+}): Promise<PoseSynthesis> {
+  const geminiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { temperature: 0.45 } });
+
+  const runSynthesis = async (forceDifferentPose: boolean) => {
+    const parts: Array<{ text: string } | GeminiApiImagePart> = [];
+    parts.push({
+      text:
+        'You are Dr. Stylist, an identity-preservation fashion runway prompt writer. Choose a standing fashion pose and matching facial expression from broad global fashion-pose knowledge, then write the final photorealistic image prompt.',
+    });
+
+    for (const { index, part } of referenceParts) {
+      let label = '';
+      if (index < modelUrls.length) {
+        label = `reference_image_${index + 1} (${modelLabels[index]})`;
+      } else {
+        label = `reference_image_${index + 1} (wardrobe garment): this exact clothing, footwear, or accessory must be worn by the same model in the final image.`;
+      }
+      parts.push({ text: label }, toGeminiImagePart(part));
+    }
+
+    const continuityInstruction = continuityPoseLabel
+      ? `Existing stored pose label for regeneration: "${continuityPoseLabel}". Keep this standing pose direction as a continuity hint unless the revision feedback explicitly asks for a different pose or facial expression.`
+      : 'No existing stored pose label is provided; choose the best standing pose for these garments.';
+    const previousPoseInstruction = previousPoseLabel
+      ? `Previous generated pose label in this batch: "${previousPoseLabel}"${previousPoseFamily ? ` from pose family "${previousPoseFamily}"` : ''}. Choose a different adjacent standing pose family and a different display label.`
+      : 'No previous batch pose label is provided.';
+    const retryInstruction = forceDifferentPose
+      ? 'The first response repeated the previous batch pose family or label. You must choose a clearly different dynamic standing pose family now.'
+      : '';
+
+    parts.push({
+      text: `Return valid JSON only, with exactly these string keys: pose_label, pose_family, pose_directive, image_prompt.
+
+Pose selection:
+- Choose a dynamic anime-fashion standing pose automatically from broad pose knowledge. It must feel alive, like a character captured in motion, while still photorealistic and garment-first.
+- The pose_directive must include at least four of these dynamic markers: ${DYNAMIC_POSE_MARKERS.join('; ')}.
+- Prefer bold standing pose families such as anime-fashion power contrapposto, dynamic three-quarter runway stride, crossed-arm torso twist, hand-in-jacket power angle, wide stance with one arm extended, over-shoulder turn with active hand, jacket-sweep motion cue, watch-adjusting action line, or other dynamic standing editorial poses.
+- Explicitly avoid neutral passport stance, front-facing straight vertical posture, arms hanging symmetrically, mannequin pose, T-pose, stiff catalog pose, and standing dead straight.
+- Match the facial expression to the pose and garment mood. Facial expression is important: focused gaze, confident intensity, fierce calm, playful smirk, or determined expression depending on the pose.
+- Do not choose seated, kneeling, crouched, lying down, jumping, or floor hero-landing poses.
+- Anime character energy is allowed only as abstract body energy, silhouette, line of action, and facial intensity; do not copy characters, costumes, armor, logos, faces, powers, auras, glowing effects, weapons, props, or backgrounds.
+- ${continuityInstruction}
+- ${previousPoseInstruction}
+- ${retryInstruction}
+
+Image prompt rules:
+- The person must remain exactly the same as the model references. Preserve face, jaw, eyes, nose, hair, skin tone, body mass, height impression, posture, proportions, and shoulder-to-waist structure.
+- ${physicalDescription ? `Mandatory body description: ${physicalDescription}. Match it exactly; do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.` : 'Use the visual model references as the mandatory body source; do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.'}
+- Selected wardrobe metadata: ${wardrobeSummary}
+- Preserve the wardrobe garment reference images exactly: colors, patterns, fabric textures, cuts, lengths, placement, and fit. The final render model will not see the references, so describe garments precisely.
+- Use a seamless clean white photo studio, a white round pedestal, soft diffused studio lighting, subtle floor shadow, and the fixed runway card format. The pose may use a wide stance, one foot forward, torso twist, arm foreshortening, jacket or hair motion cues, and expressive facial direction, but it must not hide major garments or crop limbs.
+- ${feedback ? `Revision feedback to apply: ${feedback}` : 'No revision feedback.'}
+- ${ragKnowledgeText ? `RAG knowledge base corrections for this model:\n${ragKnowledgeText}` : 'No saved RAG corrections for this model.'}
+
+The JSON values must be:
+- pose_label: 2-6 words for display.
+- pose_family: 2-5 words grouping the pose mechanics for repeat avoidance.
+- pose_directive: concise dynamic standing pose mechanics plus facial expression, including at least four dynamic markers.
+- image_prompt: continuous photorealistic prompt for the final image.`
+    });
+
+    const aiResult = await generateGeminiContentWithRetry(
+      () => geminiModel.generateContent(parts),
+      forceDifferentPose ? 'Runway prompt synthesis pose retry' : 'Runway prompt synthesis',
+    );
+    return parsePoseSynthesis(aiResult.response.text().trim());
+  };
+
+  const first = await runSynthesis(false);
+  const firstOrFallback = first ?? fallbackPoseSynthesis(wardrobeSummary);
+  const repeatedLabel = previousPoseLabel && samePoseLabel(firstOrFallback.pose_label, previousPoseLabel);
+  const repeatedFamily = previousPoseFamily && samePoseLabel(firstOrFallback.pose_family, previousPoseFamily);
+  if (repeatedLabel || repeatedFamily) {
+    const retry = await runSynthesis(true);
+    if (retry) return retry;
+  }
+  return firstOrFallback;
+}
+
 export async function generateLook(
   p: Permutation,
   _age?: number,
   feedback?: string,
+  options: GenerateLookOptions = {},
 ): Promise<GeneratedLook> {
   void _age;
   const key = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
@@ -279,7 +514,7 @@ export async function generateLook(
     p.accessory?.image_url,
     p.bag?.image_url,
     p.headwear?.image_url,
-  ].filter(Boolean);
+  ].filter((url): url is string => Boolean(url));
 
   const referenceUrls = [...modelUrls, ...garmentUrls];
 
@@ -293,51 +528,36 @@ export async function generateLook(
     }))
   );
 
-  const styleContext = p.theme.trim();
-
   const ragKnowledgeText = compileRagKnowledge(p.model);
-
-  const parts: Array<{ text: string } | GeminiApiImagePart> = [];
-  parts.push({
-    text:
-      'You are an identity-preservation prompt writer for a fashion lab. Translate references into a precise photorealistic prompt that keeps the exact same model and selected garments.',
+  const wardrobeSummary = describeWardrobeForPrompt(p);
+  const poseSynthesis = await synthesizeRunwayPosePrompt({
+    genAI,
+    referenceParts,
+    modelUrls,
+    modelLabels,
+    physicalDescription,
+    wardrobeSummary,
+    ragKnowledgeText,
+    feedback,
+    continuityPoseLabel: options.continuityPoseLabel ?? (p.theme.trim() || null),
+    previousPoseLabel: options.previousPoseLabel ?? null,
+    previousPoseFamily: options.previousPoseFamily ?? null,
   });
-
-  for (const { index, part } of referenceParts) {
-    let label = '';
-    if (index < modelUrls.length) {
-      label = `reference_image_${index + 1} (${modelLabels[index]})`;
-    } else {
-      label = `reference_image_${index + 1} (wardrobe garment): dress the same subject in this garment exactly as shown.`;
-    }
-    parts.push({ text: label }, toGeminiImagePart(part));
-  }
-
-  parts.push({
-    text: `Write a continuous, photorealistic image generation prompt describing this exact person wearing these exact clothes.
-    Crucial Directives:
-    1. Identity: The person must remain exactly the same as the model references. Preserve face, jaw, eyes, nose, hair, skin tone, body mass, height impression, posture, proportions, and shoulder-to-waist structure.
-    2. Compulsory body description: ${physicalDescription ? `${physicalDescription}. This body description is mandatory and higher priority than beauty/fashion assumptions. Match the same body mass, shoulder width, waist, torso, legs, posture, and proportions. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.` : 'Use the visual model references as the mandatory body source. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.'}
-    3. Canvas and setting: ${RUNWAY_CARD_FORMAT_PROMPT}
-    4. Setting: Use a seamless clean white photo studio with a white round pedestal under the model's feet, soft diffused studio lighting, and a subtle floor shadow. No editorial scene, no props, no stylized environment, and no mood-driven transformation.
-    5. Pose: Use a stylish outfit-aware full-body fashion pose on the pedestal that shows the complete outfit. The pose should match the garment mood and feel visually interesting, such as relaxed weight shift, one hand in pocket, subtle lean, confident shoulder angle, or natural accessory interaction. Avoid boring stiff straight standing, but do not distort body proportions or hide garments.
-    6. Garment Details: The final image generation model will NOT see the reference images. Describe the clothing references in exact visual detail: colors, patterns, fabric textures, cuts, lengths, and how they sit naturally on the same model.
-    7. Photography: Raw realistic studio photograph, DSLR clarity, natural skin texture, visible pores, normal human imperfections, accurate hands and limbs, no 3D render, no CGI, no airbrushed plastic look.
-    8. Style context: ${styleContext ? `${styleContext}. Use this only to clarify garment coordination or outfit intent; do not change identity, body, pose, pedestal, or background.` : 'No additional styling. Keep the output neutral and identity-first.'}
-    ${ragKnowledgeText ? `9. rag_knowledge_base feedback for this model, grouped by Face, Body, Style, Hair, and Complexion:\n${ragKnowledgeText}\nApply these corrections for consistency.` : ''}
-    Do not use markdown formatting, bullet points, or introductory text. Just output the final image generation prompt.`
-  });
-
-  const geminiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { temperature: 0.35 } });
-  const aiResult = await generateGeminiContentWithRetry(
-    () => geminiModel.generateContent(parts),
-    'Runway prompt synthesis',
-  );
-  let synthesizedPrompt = aiResult.response.text().trim();
-  synthesizedPrompt = synthesizedPrompt.slice(0, 800);
+  const poseLabel = poseSynthesis.pose_label;
+  const poseFamily = poseSynthesis.pose_family;
+  const poseDirective = poseSynthesis.pose_directive;
+  let synthesizedPrompt = poseSynthesis.image_prompt.trim().slice(0, 1200);
   synthesizedPrompt = `${synthesizedPrompt}
 
 MANDATORY MODEL BODY: ${physicalDescription ? `${physicalDescription}. This is compulsory. Keep this exact body type, body mass, proportions, posture, shoulder-to-waist structure, limbs, and height impression. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.` : 'Use the model reference images as the compulsory body source. Do not slim, bulk up, reshape, beautify, age-shift, or idealize the model.'}
+
+BACKEND-SELECTED STANDING POSE LABEL: ${poseLabel}
+
+BACKEND-SELECTED POSE FAMILY: ${poseFamily}
+
+MANDATORY BACKEND STYLIST POSE: ${poseDirective} This backend-selected pose must guide dynamic standing body positioning and facial expression only. It must include visible line of action, asymmetry, purposeful arms or hands, and expressive face. It must not change identity, body, clothing, white studio, pedestal, or 9:16 full-body framing. Never render neutral passport stance, straight vertical posture, arms hanging symmetrically, mannequin pose, T-pose, stiff catalog pose, or standing dead straight.
+
+MANDATORY WARDROBE PRESERVATION: Use the selected wardrobe reference images as exact clothing sources. Preserve garment colors, cuts, fabric textures, patterns, placement, fit, footwear, and accessories from the wardrobe items.
 
 MANDATORY RUNWAY CARD FORMAT: ${RUNWAY_CARD_FORMAT_PROMPT}`;
   
@@ -384,7 +604,7 @@ MANDATORY RUNWAY CARD FORMAT: ${RUNWAY_CARD_FORMAT_PROMPT}`;
     .from('runway_looks')
     .insert({
       model_id: p.model.id,
-      theme: p.theme,
+      theme: poseLabel,
       item_ids: itemIds,
       item_snapshot: persistedSnapshot,
       prompt: synthesizedPrompt,
@@ -402,7 +622,8 @@ MANDATORY RUNWAY CARD FORMAT: ${RUNWAY_CARD_FORMAT_PROMPT}`;
       id: crypto.randomUUID(),
       image_url: finalImageUrl,
       status: 'draft',
-      theme: p.theme,
+      theme: poseLabel,
+      pose_family: poseFamily,
       model_id: p.model.id,
       item_ids: itemIds,
       item_snapshot: snapshot,
@@ -413,5 +634,5 @@ MANDATORY RUNWAY CARD FORMAT: ${RUNWAY_CARD_FORMAT_PROMPT}`;
       created_at: new Date().toISOString(),
     };
   }
-  return { ...(data as GeneratedLook), item_snapshot: snapshot };
+  return { ...(data as GeneratedLook), item_snapshot: snapshot, pose_family: poseFamily };
 }

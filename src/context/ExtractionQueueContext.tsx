@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, ReactNode, useCallback, useRef, useEffect } from 'react';
+import { createContext, useContext, useState, type ReactNode, useCallback, useRef, useEffect } from 'react';
 import { analyzeOutfit, cropItems } from '../lib/drScientist';
 import { reRenderItem } from '../lib/nanoBanana';
 import { supabase } from '../lib/supabase';
@@ -118,7 +118,9 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
                 model: result.model ?? null 
             });
           }
-        } catch { }
+        } catch (error) {
+          console.warn('[ExtractionQueue] Could not record extraction metadata:', error);
+        }
 
         updateJob(id, {
           status: 'review_pending',
@@ -196,13 +198,14 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
       const ext = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
       const path = `wardrobe-items/${jobId}-${it.id}.${ext}`;
       
-      await supabase.storage
+      const { error: uploadError } = await supabase.storage
         .from('model-photosheets')
         .upload(path, blob, { contentType: mime, upsert: true });
+      if (uploadError) throw uploadError;
         
       const { data: { publicUrl } } = supabase.storage.from('model-photosheets').getPublicUrl(path);
 
-      await supabase.from('wardrobe_items').insert({
+      const { error: insertError } = await supabase.from('wardrobe_items').insert({
         name: it.name,
         category: it.targetCategory || it.category,
         subcategory: it.targetSubcategory || '',
@@ -211,13 +214,13 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
         fabric: it.fabric,
         fit: it.fit || '',
         status: 'unchecked',
-        collection: 'regular',
         parent_model_id: jobId,
         source: 'extraction',
         rendered_at: new Date().toISOString(),
         success_rate: Math.round((it.confidence || 0.8) * 100),
         popularity: 0,
       });
+      if (insertError) throw insertError;
 
       updateJobItem(jobId, it.id, { dispatched: true });
 
@@ -227,7 +230,9 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
         updateJob(jobId, { status: 'dispatched', progressMessage: 'Extraction complete' });
       }
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not send item to wardrobe.';
       console.error('Dispatch failed', err);
+      updateJob(jobId, { error: message, progressMessage: `Dispatch failed: ${message}` });
     }
   }, [updateJob, updateJobItem]);
 
@@ -253,7 +258,7 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
         renderModel: res.model,
       });
       updateJob(jobId, { progressMessage: 'Awaiting approval' });
-    } catch (e) {
+    } catch {
       updateJobItem(jobId, itemId, { renderStatus: 'failed' });
       updateJob(jobId, { progressMessage: 'Regeneration failed' });
     }
