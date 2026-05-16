@@ -11,6 +11,9 @@ export type ScoutImportMetadata = {
   scout_collection_title?: string;
   scout_category_hint?: string;
   scout_subcategory_hint?: string;
+  scout_verified_image_url?: string;
+  scout_image_width?: number | null;
+  scout_image_height?: number | null;
 };
 
 export type LabItem = ExtractedItem & {

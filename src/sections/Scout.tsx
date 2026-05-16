@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   AlertCircle,
@@ -36,7 +36,7 @@ export function Scout() {
   const director = useDirector();
 
   const approvedCandidates = useMemo(
-    () => candidates.filter((candidate) => approvedIds.has(candidate.id) && candidate.status !== 'imported'),
+    () => candidates.filter((candidate) => approvedIds.has(candidate.id) && candidate.status === 'approved' && candidate.availabilityStatus === 'verified'),
     [approvedIds, candidates],
   );
 
@@ -50,7 +50,7 @@ export function Scout() {
       const results = await searchScoutCandidates(theme, imageCount);
       setCandidates(results);
       if (results.length === 0) {
-        setError('Gemini searched, but did not return extractable image URLs. Try a more specific clothing theme.');
+        setError('Scout searched, but every candidate was unavailable, blocked, malformed, or unsuitable. Try a more specific clothing theme.');
       }
       director.push('Dr. Scout', `Found ${results.length} Gemini-critiqued images for “${theme}”.`);
     } catch (err) {
@@ -97,7 +97,7 @@ export function Scout() {
 
     for (const candidate of approvedCandidates) {
       try {
-        await addJobFromUrl(candidate.imageUrl, scoutCandidateToMetadata(candidate));
+        await addJobFromUrl(candidate.verifiedImageUrl || candidate.imageUrl, scoutCandidateToMetadata(candidate));
         updateCandidate(candidate.id, { status: 'imported' });
         sent += 1;
       } catch (err) {
@@ -119,8 +119,8 @@ export function Scout() {
           <div className="eyebrow">Section 09 · Dr. Scout</div>
           <h1 className="section-title mt-2">Scout Images</h1>
           <p className="mt-1.5 max-w-2xl text-sm text-neutral-600 dark:text-neutral-400">
-            Give Dr. Scout a theme and image count. Gemini searches the web, critiques the candidates, and only then
-            shows images for your approval before Extraction Lab handoff.
+            Give Dr. Scout a theme and image count. Gemini searches the web, validates each photo is live and fetchable,
+            critiques the candidates, and only then shows images for your approval before Extraction Lab handoff.
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-full border border-lab-border-light bg-white/50 px-3 py-2 text-sm dark:border-lab-border dark:bg-white/[0.03]">
@@ -203,7 +203,7 @@ export function Scout() {
               <Loader2 className="mx-auto h-10 w-10 animate-spin text-cobalt dark:text-indigo_electric" />
               <div className="mt-4 font-display text-2xl">Dr. Scout is searching...</div>
               <p className="mt-1 max-w-md text-sm text-neutral-500">
-                Gemini is planning searches, checking web results, and critiquing images before showing them here.
+                Gemini is planning searches, checking web results, verifying live photo files, and critiquing images before showing them here.
               </p>
             </div>
           </div>
@@ -227,6 +227,14 @@ export function Scout() {
                 approved={approvedIds.has(candidate.id)}
                 onApprove={() => approveCandidate(candidate)}
                 onReject={() => rejectCandidate(candidate)}
+                onUnavailable={() => {
+                  updateCandidate(candidate.id, { status: 'failed', availabilityStatus: 'unavailable', availabilityMessage: 'Image failed to render in the browser.' });
+                  setApprovedIds((current) => {
+                    const next = new Set(current);
+                    next.delete(candidate.id);
+                    return next;
+                  });
+                }}
               />
             ))}
           </div>
@@ -242,14 +250,35 @@ function CandidateCard({
   approved,
   onApprove,
   onReject,
+  onUnavailable,
 }: {
   candidate: ScoutCandidate;
   delay: number;
   approved: boolean;
   onApprove: () => void;
   onReject: () => void;
+  onUnavailable: () => void;
 }) {
-  const disabled = candidate.status === 'imported' || candidate.status === 'rejected' || candidate.status === 'failed';
+  const [displayUrl, setDisplayUrl] = useState(candidate.verifiedImageUrl || candidate.imageUrl);
+  const [imageFailed, setImageFailed] = useState(false);
+
+  useEffect(() => {
+    setDisplayUrl(candidate.verifiedImageUrl || candidate.imageUrl);
+    setImageFailed(false);
+  }, [candidate.imageUrl, candidate.verifiedImageUrl]);
+
+  const handleImageError = () => {
+    const fallbackUrl = candidate.thumbnailUrl && candidate.thumbnailUrl !== displayUrl ? candidate.thumbnailUrl : '';
+    if (fallbackUrl) {
+      setDisplayUrl(fallbackUrl);
+      return;
+    }
+
+    setImageFailed(true);
+    onUnavailable();
+  };
+
+  const disabled = imageFailed || candidate.availabilityStatus !== 'verified' || candidate.status === 'imported' || candidate.status === 'rejected' || candidate.status === 'failed';
 
   return (
     <motion.div
@@ -259,13 +288,24 @@ function CandidateCard({
       className="group overflow-hidden rounded-3xl border border-lab-border-light bg-white/50 dark:border-lab-border dark:bg-white/[0.03]"
     >
       <div className="relative aspect-[4/5] overflow-hidden bg-white">
-        <img
-          src={candidate.thumbnailUrl || candidate.imageUrl}
-          alt={candidate.title}
-          className="h-full w-full object-cover transition duration-700 group-hover:scale-105"
-          loading="lazy"
-          referrerPolicy="no-referrer"
-        />
+        {!imageFailed ? (
+          <img
+            src={displayUrl}
+            alt={candidate.title}
+            className="h-full w-full object-cover transition duration-700 group-hover:scale-105"
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            onError={handleImageError}
+          />
+        ) : (
+          <div className="grid h-full place-items-center bg-neutral-100 p-6 text-center text-neutral-500 dark:bg-white/[0.04]">
+            <div>
+              <AlertCircle className="mx-auto h-8 w-8" />
+              <div className="mt-3 text-sm font-semibold">Image unavailable</div>
+              <p className="mt-1 text-xs">Scout removed this result because the photo no longer loads.</p>
+            </div>
+          </div>
+        )}
         <div className="absolute left-3 top-3 flex flex-wrap gap-1.5">
           <span className="rounded-full bg-black/75 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white">
             {candidate.confidence}% Gemini
@@ -278,6 +318,11 @@ function CandidateCard({
           {candidate.status === 'imported' && (
             <span className="rounded-full bg-cobalt px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white dark:bg-indigo_electric">
               Sent
+            </span>
+          )}
+          {candidate.availabilityStatus === 'verified' && candidate.status !== 'failed' && (
+            <span className="rounded-full bg-emerald-500 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white">
+              Live photo
             </span>
           )}
           {candidate.status === 'failed' && (
@@ -307,6 +352,7 @@ function CandidateCard({
         <div className="flex flex-wrap gap-1.5">
           <span className="chip">{candidate.sourceName}</span>
           <span className="chip">{candidate.licenseLabel}</span>
+          {candidate.imageWidth && candidate.imageHeight && <span className="chip">{candidate.imageWidth}×{candidate.imageHeight}</span>}
         </div>
         <div className="grid grid-cols-2 gap-2">
           <button
