@@ -2,7 +2,7 @@ import { createContext, useContext, useState, type ReactNode, useCallback, useRe
 import { analyzeOutfit, cropItems } from '../lib/drScientist';
 import { reRenderItem } from '../lib/nanoBanana';
 import { supabase } from '../lib/supabase';
-import { LabItem, classifyItem } from '../lib/extractionUtils';
+import { LabItem, classifyItem, type ScoutImportMetadata } from '../lib/extractionUtils';
 
 export type JobStatus = 'scanning' | 'review_pending' | 'rendering' | 'verify_pending' | 'dispatched' | 'failed';
 
@@ -16,11 +16,12 @@ export type ExtractionJob = {
   model: string | null;
   error?: string;
   progressMessage?: string;
+  scoutMetadata?: ScoutImportMetadata;
 };
 
 type ExtractionQueueContextType = {
   jobs: ExtractionJob[];
-  addJob: (file: File) => string;
+  addJob: (file: File, scoutMetadata?: ScoutImportMetadata) => string;
   updateJob: (id: string, patch: Partial<ExtractionJob>) => void;
   updateJobItem: (jobId: string, itemId: string, patch: Partial<LabItem>) => void;
   removeJobItem: (jobId: string, itemId: string) => void;
@@ -28,6 +29,7 @@ type ExtractionQueueContextType = {
   dismissJob: (jobId: string) => void;
   dispatchItem: (jobId: string, itemId: string) => Promise<void>;
   regenerateItem: (jobId: string, itemId: string) => Promise<void>;
+  addJobFromUrl: (imageUrl: string, scoutMetadata?: ScoutImportMetadata) => Promise<string>;
 };
 
 export const ExtractionQueueContext = createContext<ExtractionQueueContextType | null>(null);
@@ -68,7 +70,7 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  const addJob = useCallback((file: File) => {
+  const addJob = useCallback((file: File, scoutMetadata?: ScoutImportMetadata) => {
     const id = crypto.randomUUID();
     const originalImageSrc = URL.createObjectURL(file);
     const newJob: ExtractionJob = {
@@ -79,7 +81,8 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
       status: 'scanning',
       mocked: false,
       model: null,
-      progressMessage: 'Scanning image with Dr. Scientist...',
+      progressMessage: scoutMetadata ? 'Scanning Scout source with Dr. Scientist...' : 'Scanning image with Dr. Scientist...',
+      scoutMetadata,
     };
     setJobs((prev) => [...prev, newJob]);
 
@@ -99,11 +102,14 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
         const cropped = await cropItems(originalImageSrc, result.items);
         const tagged: LabItem[] = cropped.map((c) => {
           const { category, subcategory } = classifyItem(c.name, c.category);
+          const targetCategory = scoutMetadata?.scout_category_hint || category;
+          const targetSubcategory = scoutMetadata?.scout_subcategory_hint || subcategory;
           return {
             ...c,
-            targetCategory: category,
-            targetSubcategory: subcategory,
+            targetCategory,
+            targetSubcategory,
             renderStatus: 'pending',
+            scoutMetadata,
           };
         });
 
@@ -140,6 +146,22 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
 
     return id;
   }, [updateJob]);
+
+  const addJobFromUrl = useCallback(async (imageUrl: string, scoutMetadata?: ScoutImportMetadata) => {
+    const response = await fetch(imageUrl, { mode: 'cors' });
+    if (!response.ok) {
+      throw new Error(`Could not fetch Scout source image (${response.status}). Try a direct image URL.`);
+    }
+
+    const blob = await response.blob();
+    if (!blob.type.startsWith('image/')) {
+      throw new Error('Scout source did not resolve to an image file.');
+    }
+
+    const extension = blob.type.includes('jpeg') ? 'jpg' : blob.type.includes('webp') ? 'webp' : 'png';
+    const file = new File([blob], `dr-scout-${Date.now()}.${extension}`, { type: blob.type });
+    return addJob(file, scoutMetadata);
+  }, [addJob]);
 
   const startRendering = useCallback(async (jobId: string) => {
     const job = jobsRef.current.find((j) => j.id === jobId);
@@ -205,6 +227,7 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
         
       const { data: { publicUrl } } = supabase.storage.from('model-photosheets').getPublicUrl(path);
 
+      const scoutMetadata = it.scoutMetadata ?? job.scoutMetadata;
       const { error: insertError } = await supabase.from('wardrobe_items').insert({
         name: it.name,
         category: it.targetCategory || it.category,
@@ -215,10 +238,20 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
         fit: it.fit || '',
         status: 'unchecked',
         parent_model_id: jobId,
-        source: 'extraction',
+        source: scoutMetadata ? 'dr_scout' : 'extraction',
+        collection: scoutMetadata?.scout_collection_key || 'regular',
         rendered_at: new Date().toISOString(),
         success_rate: Math.round((it.confidence || 0.8) * 100),
         popularity: 0,
+        scout_source_url: scoutMetadata?.scout_source_url ?? null,
+        scout_source_name: scoutMetadata?.scout_source_name ?? null,
+        scout_query: scoutMetadata?.scout_query ?? null,
+        scout_brief: scoutMetadata?.scout_brief ?? null,
+        scout_license_label: scoutMetadata?.scout_license_label ?? null,
+        scout_confidence: scoutMetadata?.scout_confidence ?? null,
+        scout_collection_key: scoutMetadata?.scout_collection_key ?? null,
+        scout_collection_title: scoutMetadata?.scout_collection_title ?? null,
+        scout_imported_at: scoutMetadata ? new Date().toISOString() : null,
       });
       if (insertError) throw insertError;
 
@@ -269,7 +302,7 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <ExtractionQueueContext.Provider value={{ jobs, addJob, updateJob, updateJobItem, removeJobItem, startRendering, dismissJob, dispatchItem, regenerateItem }}>
+    <ExtractionQueueContext.Provider value={{ jobs, addJob, updateJob, updateJobItem, removeJobItem, startRendering, dismissJob, dispatchItem, regenerateItem, addJobFromUrl }}>
       {children}
     </ExtractionQueueContext.Provider>
   );

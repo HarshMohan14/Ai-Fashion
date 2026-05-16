@@ -1,5 +1,18 @@
 import { type ExtractedItem } from './drScientist';
 
+export type ScoutImportMetadata = {
+  scout_source_url?: string;
+  scout_source_name?: string;
+  scout_query?: string;
+  scout_brief?: string;
+  scout_license_label?: string;
+  scout_confidence?: number;
+  scout_collection_key?: string;
+  scout_collection_title?: string;
+  scout_category_hint?: string;
+  scout_subcategory_hint?: string;
+};
+
 export type LabItem = ExtractedItem & {
   renderedDataUrl?: string;
   renderStatus?: 'pending' | 'ready' | 'failed';
@@ -8,6 +21,7 @@ export type LabItem = ExtractedItem & {
   dispatched?: boolean;
   targetCategory?: string;
   targetSubcategory?: string;
+  scoutMetadata?: ScoutImportMetadata;
 };
 
 export const CATEGORY_MAP: Array<{ match: RegExp; category: string; sub: string }> = [

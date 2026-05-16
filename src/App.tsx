@@ -13,6 +13,7 @@ import { Scenarios } from './sections/Scenarios';
 import { Runway } from './sections/Runway';
 import { Looks } from './sections/Looks';
 import { Analytics } from './sections/Analytics';
+import { Scout } from './sections/Scout';
 import { DateOrDump } from './sections/DateOrDump';
 import { ComiconDuel } from './sections/ComiconDuel';
 
@@ -45,6 +46,7 @@ export default function App() {
         <Shell current={section} onChange={setSection}>
           {section === 'boardroom' && <Boardroom />}
           {section === 'wardrobe' && <Wardrobe />}
+          {section === 'scout' && <Scout />}
           {section === 'lab' && <ExtractionLab />}
           {section === 'models' && <ModelHub />}
           {section === 'scenarios' && <Scenarios />}
