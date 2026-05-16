@@ -254,7 +254,6 @@ async function generateGeminiTextWithGoogleSearch(prompt: string) {
       tools: [{ google_search: {} }],
       generationConfig: {
         temperature: 0.35,
-        responseMimeType: 'application/json',
       },
     }),
   });
