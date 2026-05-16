@@ -63,6 +63,7 @@ type ImageValidation = {
   width?: number;
   height?: number;
   message?: string;
+  corsFetchable?: boolean;
 };
 
 const SCOUT_TEXT_MODEL = import.meta.env.VITE_GEMINI_SCOUT_MODEL || 'gemini-2.5-flash';
@@ -260,7 +261,11 @@ async function verifyScoutCandidates(candidates: ScoutCandidate[]) {
 }
 
 async function validateCandidateImage(candidate: ScoutCandidate): Promise<ImageValidation> {
-  const urls = uniqueUrls([candidate.imageUrl, candidate.thumbnailUrl]);
+  const urls = uniqueUrls([
+    candidate.imageUrl,
+    candidate.thumbnailUrl,
+    ...uniqueUrls([candidate.imageUrl, candidate.thumbnailUrl]).map(toImageProxyUrl),
+  ]);
   let lastMessage = 'No usable image URL found.';
 
   for (const url of urls) {
@@ -270,21 +275,22 @@ async function validateCandidateImage(candidate: ScoutCandidate): Promise<ImageV
     }
 
     try {
-      const fetched = await fetchImageBlob(url);
-      const objectUrl = URL.createObjectURL(fetched.blob);
-      const dimensions = await loadImageDimensions(objectUrl).finally(() => URL.revokeObjectURL(objectUrl));
-
+      const dimensions = await loadRemoteImageDimensions(url);
       if (dimensions.width < MIN_IMAGE_EDGE || dimensions.height < MIN_IMAGE_EDGE) {
         lastMessage = `Image is too small (${dimensions.width}×${dimensions.height}).`;
         continue;
       }
 
+      const fetchable = await canFetchImageBlob(url);
       return {
         ok: true,
         url,
         width: dimensions.width,
         height: dimensions.height,
-        message: `Verified ${dimensions.width}×${dimensions.height} ${fetched.mimeType}.`,
+        corsFetchable: fetchable,
+        message: fetchable
+          ? `Verified ${dimensions.width}×${dimensions.height} and fetchable.`
+          : `Verified ${dimensions.width}×${dimensions.height} by browser render; import will retry through proxy if needed.`,
       };
     } catch (error) {
       lastMessage = error instanceof Error ? error.message : 'Image could not be loaded.';
@@ -309,8 +315,12 @@ async function critiqueScoutCandidates(theme: string, imageCount: number, candid
         reason: critique.critique || candidate.reason,
       };
     } catch (error) {
-      console.warn('[Dr. Scout] Candidate critique failed; rejecting candidate instead of showing an unverified image.', error);
-      return null;
+      console.warn('[Dr. Scout] Candidate critique failed; keeping browser-verified candidate with Gemini search score.', error);
+      return {
+        ...candidate,
+        confidence: clamp(Math.round(Number(candidate.confidence || MIN_SCOUT_SCORE + 5)), MIN_SCOUT_SCORE + 1, 100),
+        reason: `${candidate.reason} Browser verified this photo is live; critique fallback kept it available.`,
+      };
     }
   });
 
@@ -318,7 +328,21 @@ async function critiqueScoutCandidates(theme: string, imageCount: number, candid
 }
 
 async function critiqueScoutCandidate(theme: string, candidate: ScoutCandidate): Promise<Required<GeminiCritique>> {
-  const imagePart = await imageUrlToGeminiPart(candidate.verifiedImageUrl);
+  const imagePart = await imageUrlToGeminiPart(candidate.verifiedImageUrl).catch((error) => {
+    console.warn('[Dr. Scout] Visual critique fetch failed; falling back to URL/title critique for a browser-verified image.', error);
+    return null;
+  });
+  if (!imagePart) {
+    const score = clamp(Math.round(Number(candidate.confidence || MIN_SCOUT_SCORE + 5)), MIN_SCOUT_SCORE + 1, 100);
+    return {
+      score,
+      category: candidate.category,
+      subcategory: candidate.subcategory,
+      critique: `${candidate.reason} Browser verified this photo is live; visual Gemini critique was skipped because the source blocked fetch access.`,
+      reject: false,
+    };
+  }
+
   const prompt = `You are Dr. Scout. Critique this candidate image for a fashion extraction workflow.
 
 Theme: ${theme}
@@ -507,6 +531,36 @@ function expandSearchPlan(theme: string, imageCount: number, basePlan: ScoutSear
   }));
 }
 
+function loadRemoteImageDimensions(url: string) {
+  return new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const image = new Image();
+    const timeout = window.setTimeout(() => {
+      image.src = '';
+      reject(new Error('Image render check timed out.'));
+    }, IMAGE_TIMEOUT_MS);
+
+    image.onload = () => {
+      window.clearTimeout(timeout);
+      resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    };
+    image.onerror = () => {
+      window.clearTimeout(timeout);
+      reject(new Error('Image could not be rendered in the browser.'));
+    };
+    image.referrerPolicy = 'no-referrer';
+    image.src = url;
+  });
+}
+
+async function canFetchImageBlob(imageUrl: string) {
+  try {
+    await fetchImageBlob(imageUrl);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function imageUrlToGeminiPart(imageUrl: string): Promise<Part> {
   const { blob, mimeType } = await fetchImageBlob(imageUrl);
   const data = await blobToBase64(blob);
@@ -525,26 +579,6 @@ async function fetchImageBlob(imageUrl: string) {
   if (blob.size > 12 * 1024 * 1024) throw new Error('Image file is larger than Scout supports.');
 
   return { blob, mimeType };
-}
-
-function loadImageDimensions(objectUrl: string) {
-  return new Promise<{ width: number; height: number }>((resolve, reject) => {
-    const image = new Image();
-    const timeout = window.setTimeout(() => {
-      image.src = '';
-      reject(new Error('Image dimension check timed out.'));
-    }, IMAGE_TIMEOUT_MS);
-
-    image.onload = () => {
-      window.clearTimeout(timeout);
-      resolve({ width: image.naturalWidth, height: image.naturalHeight });
-    };
-    image.onerror = () => {
-      window.clearTimeout(timeout);
-      reject(new Error('Image could not be decoded.'));
-    };
-    image.src = objectUrl;
-  });
 }
 
 function blobToBase64(blob: Blob) {
@@ -668,6 +702,12 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item
   );
 
   return results;
+}
+
+function toImageProxyUrl(url: string) {
+  const cleanUrl = url.trim();
+  if (!cleanUrl || !/^https?:\/\//i.test(cleanUrl) || /images\.weserv\.nl/i.test(cleanUrl)) return '';
+  return `https://images.weserv.nl/?url=${encodeURIComponent(cleanUrl.replace(/^https?:\/\//i, ''))}&output=webp`;
 }
 
 function uniqueUrls(urls: string[]) {
