@@ -1,38 +1,12 @@
-export type ScoutCategory =
-  | 'Topwear'
-  | 'Bottomwear'
-  | 'Outerwear'
-  | 'Footwear'
-  | 'Accessories'
-  | 'Eyewear'
-  | 'Jewelry'
-  | 'Bags'
-  | 'Headwear'
-  | 'Indian Wear';
+import { GoogleGenerativeAI, type Part } from '@google/generative-ai';
 
-export type ScoutCandidateStatus = 'suggested' | 'shortlisted' | 'approved' | 'rejected' | 'imported' | 'failed';
+export type ScoutCandidateStatus = 'suggested' | 'approved' | 'rejected' | 'imported' | 'failed';
 
-export type ScoutBrief = {
-  raw: string;
-  title: string;
-  collectionKey: string;
-  season: string;
-  region: string;
-  mood: string[];
-  categories: Array<{ category: ScoutCategory; subcategory: string }>;
-  colors: string[];
-  fabrics: string[];
-  avoid: string[];
-};
-
-export type ScoutSearchIntent = {
-  id: string;
+export type ScoutSearchQuery = {
   query: string;
-  category: ScoutCategory;
+  category: string;
   subcategory: string;
   priority: number;
-  collection: string;
-  notes: string;
 };
 
 export type ScoutCandidate = {
@@ -43,291 +17,367 @@ export type ScoutCandidate = {
   sourceUrl: string;
   sourceName: string;
   licenseLabel: string;
-  category: ScoutCategory;
+  category: string;
   subcategory: string;
   confidence: number;
   reason: string;
   query: string;
   collection: string;
+  collectionTitle: string;
   brief: string;
   status: ScoutCandidateStatus;
-  qualityFlags: string[];
 };
 
-export type ScoutPack = {
-  id: string;
-  name: string;
-  description: string;
-  candidateIds: string[];
-  categoryCoverage: ScoutCategory[];
-  estimatedWardrobeValue: number;
-};
+type GeminiCandidate = Partial<{
+  title: string;
+  imageUrl: string;
+  thumbnailUrl: string;
+  sourceUrl: string;
+  sourceName: string;
+  licenseLabel: string;
+  category: string;
+  subcategory: string;
+  score: number;
+  critique: string;
+  query: string;
+}>;
 
-type BriefPreset = {
-  match: RegExp;
-  region: string;
-  mood: string[];
-  colors: string[];
-  fabrics: string[];
-  avoid: string[];
-  categories: ScoutBrief['categories'];
-};
+type GeminiPlan = Partial<{ queries: ScoutSearchQuery[] }>;
 
-const PRESETS: BriefPreset[] = [
-  {
-    match: /indian|desi|ethnic|kurta|saree|lehenga/i,
-    region: 'Indian',
-    mood: ['airy', 'festive', 'daywear', 'heritage-modern'],
-    colors: ['ivory', 'pastel yellow', 'mint', 'coral', 'sky blue', 'rose pink'],
-    fabrics: ['cotton', 'linen', 'mulmul', 'chikankari', 'light silk'],
-    avoid: ['heavy velvet', 'dark wool', 'winter layering', 'overly bridal weight'],
-    categories: [
-      { category: 'Indian Wear', subcategory: 'Kurtas' },
-      { category: 'Bottomwear', subcategory: 'Palazzos' },
-      { category: 'Indian Wear', subcategory: 'Nehru Jackets' },
-      { category: 'Footwear', subcategory: 'Juttis' },
-      { category: 'Jewelry', subcategory: 'Earrings' },
-      { category: 'Jewelry', subcategory: 'Bracelets' },
-      { category: 'Bags', subcategory: 'Tote Bags' },
-      { category: 'Accessories', subcategory: 'Scarves' },
-    ],
-  },
-  {
-    match: /street|y2k|urban|oversized|sneaker/i,
-    region: 'Streetwear',
-    mood: ['graphic', 'layered', 'youthful', 'high-contrast'],
-    colors: ['black', 'washed denim', 'chrome', 'acid green', 'white'],
-    fabrics: ['denim', 'jersey', 'nylon', 'fleece'],
-    avoid: ['formal tailoring', 'delicate jewelry'],
-    categories: [
-      { category: 'Topwear', subcategory: 'Graphic Tees' },
-      { category: 'Bottomwear', subcategory: 'Cargo Pants' },
-      { category: 'Outerwear', subcategory: 'Bomber Jackets' },
-      { category: 'Footwear', subcategory: 'Sneakers' },
-      { category: 'Bags', subcategory: 'Messenger Bags' },
-      { category: 'Headwear', subcategory: 'Caps' },
-    ],
-  },
-  {
-    match: /office|formal|boardroom|workwear|minimal/i,
-    region: 'Minimal workwear',
-    mood: ['polished', 'modular', 'premium basics', 'sharp'],
-    colors: ['charcoal', 'cream', 'navy', 'taupe', 'white'],
-    fabrics: ['cotton poplin', 'wool blend', 'crepe', 'leather'],
-    avoid: ['loud graphics', 'costume styling'],
-    categories: [
-      { category: 'Topwear', subcategory: 'Formal Shirts' },
-      { category: 'Bottomwear', subcategory: 'Formal Trousers' },
-      { category: 'Outerwear', subcategory: 'Blazers' },
-      { category: 'Footwear', subcategory: 'Loafers' },
-      { category: 'Bags', subcategory: 'Handbags' },
-      { category: 'Accessories', subcategory: 'Belts' },
-    ],
-  },
-];
+type GeminiCritique = Partial<{
+  score: number;
+  category: string;
+  subcategory: string;
+  critique: string;
+  reject: boolean;
+}>;
 
-const FALLBACK_CATEGORIES: ScoutBrief['categories'] = [
-  { category: 'Topwear', subcategory: 'Statement Tops' },
-  { category: 'Bottomwear', subcategory: 'Coordinated Bottoms' },
-  { category: 'Footwear', subcategory: 'Hero Shoes' },
-  { category: 'Bags', subcategory: 'Carry Bags' },
-  { category: 'Accessories', subcategory: 'Styling Accessories' },
-];
+const SCOUT_TEXT_MODEL = import.meta.env.VITE_GEMINI_SCOUT_MODEL || 'gemini-2.5-flash';
+const MIN_SCOUT_SCORE = 65;
 
-const MOCK_IMAGE_POOL = [
-  'https://images.unsplash.com/photo-1583391733956-6c78276477e2?w=900',
-  'https://images.unsplash.com/photo-1610030469983-98e550d6193c?w=900',
-  'https://images.unsplash.com/photo-1594633312681-425c7b97ccd1?w=900',
-  'https://images.unsplash.com/photo-1543163521-1bf539c55dd2?w=900',
-  'https://images.unsplash.com/photo-1594223274512-ad4803739b7c?w=900',
-  'https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?w=900',
-  'https://images.unsplash.com/photo-1573408301185-9146fe634ad0?w=900',
-  'https://images.unsplash.com/photo-1523170335258-f5ed11844a49?w=900',
-  'https://images.unsplash.com/photo-1575428652377-a2d80e2277fc?w=900',
-  'https://images.unsplash.com/photo-1551488831-00ddcb6c6bd3?w=900',
-  'https://images.unsplash.com/photo-1523398002811-999ca8dec234?w=900',
-  'https://images.unsplash.com/photo-1558769132-cb1aea458c5e?w=900',
-];
-
-export function parseScoutBrief(input: string): ScoutBrief {
-  const raw = input.trim() || 'Fresh wardrobe capsule';
-  const season = detectSeason(raw);
-  const preset = PRESETS.find((item) => item.match.test(raw));
-  const title = titleize(raw.replace(/\b(collection|capsule|drop|wardrobe)\b/gi, '').trim() || raw);
-
-  return {
-    raw,
-    title: `${title} Collection`,
-    collectionKey: slugify(title),
-    season,
-    region: preset?.region ?? 'Global fashion',
-    mood: mergeUnique([seasonMood(season), ...(preset?.mood ?? ['curated', 'editorial', 'wardrobe-ready'])]).filter(Boolean),
-    categories: preset?.categories ?? FALLBACK_CATEGORIES,
-    colors: preset?.colors ?? ['black', 'white', 'sand', 'cobalt', 'silver'],
-    fabrics: preset?.fabrics ?? ['cotton', 'linen', 'denim', 'leather'],
-    avoid: preset?.avoid ?? ['busy collage images', 'unclear product photos', 'low-resolution references'],
-  };
+export function hasScoutGeminiKey() {
+  return Boolean(import.meta.env.VITE_GEMINI_API_KEY);
 }
 
-export function buildScoutSearchIntents(brief: ScoutBrief): ScoutSearchIntent[] {
-  return brief.categories.map((entry, index) => {
-    const queryParts = [
-      brief.season !== 'all-season' ? brief.season : '',
-      brief.region,
-      entry.subcategory,
-      entry.category,
-      'clean product photo',
-      'fashion reference',
-      brief.colors.slice(0, 2).join(' '),
-    ].filter(Boolean);
+export async function searchScoutCandidates(theme: string, imageCount: number): Promise<ScoutCandidate[]> {
+  const cleanTheme = theme.trim();
+  if (!cleanTheme) throw new Error('Tell Dr. Scout what theme to source.');
+  if (!hasScoutGeminiKey()) throw new Error('Missing VITE_GEMINI_API_KEY. Dr. Scout needs Gemini to search and critique images.');
 
-    return {
-      id: `${brief.collectionKey}-${slugify(entry.subcategory)}-${index}`,
-      query: queryParts.join(' '),
-      category: entry.category,
-      subcategory: entry.subcategory,
-      priority: 100 - index * 7,
-      collection: brief.collectionKey,
-      notes: `Scout for ${entry.subcategory.toLowerCase()} that feels ${brief.mood.slice(0, 3).join(', ')}.`,
-    };
-  });
+  const targetCount = clamp(Math.round(imageCount || 1), 1, 30);
+  const plan = await createScoutSearchPlan(cleanTheme, targetCount);
+  const rawCandidates = await findScoutImagesWithGemini(cleanTheme, targetCount, plan);
+  const critiqued = await critiqueScoutCandidates(cleanTheme, targetCount, rawCandidates);
+
+  return critiqued
+    .filter((candidate) => candidate.confidence >= MIN_SCOUT_SCORE && isUsableImageUrl(candidate.imageUrl))
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, targetCount);
 }
 
-export async function searchScoutImages(intents: ScoutSearchIntent[], brief: ScoutBrief): Promise<ScoutCandidate[]> {
-  const candidates = intents.flatMap((intent, intentIndex) =>
-    [0, 1].map((variant) => createMockCandidate(intent, brief, intentIndex, variant)),
-  );
-  return Promise.resolve(candidates.sort((a, b) => b.confidence - a.confidence));
-}
+export async function createScoutSearchPlan(theme: string, imageCount: number): Promise<ScoutSearchQuery[]> {
+  const prompt = `You are Dr. Scout for an AI fashion wardrobe app.
 
-export function candidateFromManualUrl(url: string, brief: ScoutBrief, intent: ScoutSearchIntent): ScoutCandidate {
-  const base = createMockCandidate(intent, brief, 0, 0);
-  return {
-    ...base,
-    id: `manual-${stableHash(url)}-${Date.now()}`,
-    title: `${intent.subcategory} manual reference`,
-    imageUrl: url.trim(),
-    thumbnailUrl: url.trim(),
-    sourceUrl: url.trim(),
-    sourceName: sourceNameFromUrl(url),
-    licenseLabel: 'User-confirmed rights required',
-    confidence: 78,
-    reason: 'Manual URL added by Director. Confirm usage rights before importing.',
-    qualityFlags: ['manual-source', 'rights-confirmation-needed'],
-  };
-}
+Theme: ${theme}
+Images needed: ${imageCount}
 
-export function buildScoutPacks(candidates: ScoutCandidate[]): ScoutPack[] {
-  const strong = candidates.filter((candidate) => candidate.confidence >= 80).slice(0, 8);
-  const accessory = candidates.filter((candidate) => ['Jewelry', 'Bags', 'Accessories', 'Footwear'].includes(candidate.category));
+Create focused web image sourcing queries for clear clothing/accessory reference images. Prefer product photos, catalog photos, flat lays, ghost mannequin images, or clean single-item photos. Include a balanced mix of garments and accessories when the theme suggests it.
 
-  return [
-    {
-      id: 'runway-ready-capsule',
-      name: 'Runway-ready capsule',
-      description: 'Highest-confidence garments and accessories with broad category coverage.',
-      candidateIds: strong.map((candidate) => candidate.id),
-      categoryCoverage: uniqueCategories(strong),
-      estimatedWardrobeValue: strong.length,
-    },
-    {
-      id: 'accessory-finisher-pack',
-      name: 'Accessory finisher pack',
-      description: 'Footwear, bags, jewelry, and finishing details that make generated looks feel complete.',
-      candidateIds: accessory.slice(0, 6).map((candidate) => candidate.id),
-      categoryCoverage: uniqueCategories(accessory),
-      estimatedWardrobeValue: accessory.slice(0, 6).length,
-    },
-  ].filter((pack) => pack.candidateIds.length > 0);
+Return ONLY JSON:
+{
+  "queries": [
+    { "query": "men summer cotton kurta product photo", "category": "Indian Wear", "subcategory": "Kurtas", "priority": 100 }
+  ]
+}`;
+
+  try {
+    const text = await generateGeminiText(prompt);
+    const parsed = parseJson<GeminiPlan>(text);
+    const queries = (parsed.queries ?? [])
+      .filter((item) => item.query && item.category && item.subcategory)
+      .map((item, index) => ({
+        query: item.query.trim(),
+        category: item.category.trim(),
+        subcategory: item.subcategory.trim(),
+        priority: Number.isFinite(item.priority) ? item.priority : 100 - index * 5,
+      }));
+
+    if (queries.length) return queries.slice(0, Math.max(6, Math.min(16, imageCount + 4)));
+  } catch (error) {
+    console.warn('[Dr. Scout] Gemini search plan failed; using fallback queries.', error);
+  }
+
+  return fallbackSearchPlan(theme, imageCount);
 }
 
 export function scoutCandidateToMetadata(candidate: ScoutCandidate) {
   return {
-    scout_source_url: candidate.sourceUrl,
+    scout_source_url: candidate.sourceUrl || candidate.imageUrl,
     scout_source_name: candidate.sourceName,
     scout_query: candidate.query,
     scout_brief: candidate.brief,
     scout_license_label: candidate.licenseLabel,
     scout_confidence: candidate.confidence,
     scout_collection_key: candidate.collection,
-    scout_collection_title: titleize(candidate.collection.replace(/-/g, ' ')),
+    scout_collection_title: candidate.collectionTitle,
     scout_category_hint: candidate.category,
     scout_subcategory_hint: candidate.subcategory,
   };
 }
 
-function createMockCandidate(intent: ScoutSearchIntent, brief: ScoutBrief, intentIndex: number, variant: number): ScoutCandidate {
-  const seed = `${intent.id}-${variant}`;
-  const imageUrl = MOCK_IMAGE_POOL[Math.abs(stableHash(seed)) % MOCK_IMAGE_POOL.length];
-  const title = `${brief.title}: ${intent.subcategory} ${variant === 0 ? 'hero reference' : 'alternate texture'}`;
-  const base: ScoutCandidate = {
-    id: `${intent.id}-${variant}`,
-    title,
-    imageUrl,
-    thumbnailUrl: imageUrl,
-    sourceUrl: imageUrl.replace(/\?.*$/, ''),
-    sourceName: 'Mock Scout Board',
-    licenseLabel: 'Demo reference — replace with licensed source before production',
-    category: intent.category,
-    subcategory: intent.subcategory,
-    confidence: 0,
-    reason: '',
-    query: intent.query,
-    collection: intent.collection,
-    brief: brief.raw,
-    status: 'suggested',
-    qualityFlags: [],
-  };
-  const scored = scoreScoutCandidate(base, intent, intentIndex, variant);
-  return { ...base, ...scored };
+async function findScoutImagesWithGemini(theme: string, imageCount: number, plan: ScoutSearchQuery[]) {
+  const prompt = `You are Dr. Scout. Use Google Search to find direct image URLs for fashion sourcing.
+
+Theme: ${theme}
+Images needed: ${imageCount}
+Search plan:
+${JSON.stringify(plan, null, 2)}
+
+Find ${Math.min(imageCount * 2, 40)} candidate clothing/accessory reference images from the public web.
+Rules:
+- Return direct image URLs when possible. imageUrl must be a downloadable image file URL, not only a page URL.
+- Prefer product/catalog/reference photos where a single garment or accessory is clearly visible.
+- Avoid collages, screenshots, watermarked images, runway crowds, tiny thumbnails, and heavily cluttered backgrounds.
+- Match the theme exactly.
+- Include sourceUrl for attribution/audit.
+- If unsure about license, use "Rights confirmation required".
+
+Return ONLY compact JSON:
+{
+  "candidates": [
+    {
+      "title": "Men cotton kurta product photo",
+      "imageUrl": "https://...jpg",
+      "thumbnailUrl": "https://...jpg",
+      "sourceUrl": "https://source-page...",
+      "sourceName": "brand or domain",
+      "licenseLabel": "Rights confirmation required",
+      "category": "Indian Wear",
+      "subcategory": "Kurtas",
+      "score": 80,
+      "critique": "Clean visible kurta, strong theme match.",
+      "query": "men summer cotton kurta product photo"
+    }
+  ]
+}`;
+
+  const text = await generateGeminiTextWithGoogleSearch(prompt);
+  const parsed = parseJson<{ candidates?: GeminiCandidate[] }>(text);
+  const collection = slugify(theme);
+  const collectionTitle = titleize(theme);
+
+  return (parsed.candidates ?? [])
+    .map((candidate, index) => normalizeGeminiCandidate(candidate, theme, collection, collectionTitle, plan[index % Math.max(plan.length, 1)], index))
+    .filter((candidate): candidate is ScoutCandidate => Boolean(candidate));
 }
 
-function scoreScoutCandidate(candidate: ScoutCandidate, intent: ScoutSearchIntent, intentIndex = 0, variant = 0) {
-  const haystack = `${candidate.title} ${candidate.sourceName} ${candidate.query}`.toLowerCase();
-  const qualityFlags: string[] = [];
-  let confidence = 68;
+async function critiqueScoutCandidates(theme: string, imageCount: number, candidates: ScoutCandidate[]) {
+  const unique = dedupeCandidates(candidates).slice(0, Math.min(Math.max(imageCount * 2, imageCount), 40));
+  const critiqued: ScoutCandidate[] = [];
 
-  if (haystack.includes(intent.subcategory.toLowerCase().split(' ')[0])) {
-    confidence += 12;
-    qualityFlags.push('category-match');
+  for (const candidate of unique) {
+    try {
+      const critique = await critiqueScoutCandidate(theme, candidate);
+      if (!critique.reject) {
+        critiqued.push({
+          ...candidate,
+          confidence: critique.score,
+          category: critique.category || candidate.category,
+          subcategory: critique.subcategory || candidate.subcategory,
+          reason: critique.critique || candidate.reason,
+        });
+      }
+    } catch (error) {
+      console.warn('[Dr. Scout] Candidate critique failed; keeping Gemini search score.', error);
+      critiqued.push(candidate);
+    }
   }
-  if (/product|reference|clean|catalog/.test(haystack)) {
-    confidence += 8;
-    qualityFlags.push('extractable-framing');
-  }
-  if (/collage|moodboard|runway crowd|blurry/.test(haystack)) {
-    confidence -= 18;
-    qualityFlags.push('review-for-clutter');
-  }
-  confidence += Math.max(0, 8 - intentIndex);
-  confidence -= variant * 5;
+
+  return critiqued;
+}
+
+async function critiqueScoutCandidate(theme: string, candidate: ScoutCandidate): Promise<Required<GeminiCritique>> {
+  const imagePart = await imageUrlToGeminiPart(candidate.imageUrl).catch(() => null);
+  const prompt = `You are Dr. Scout. Critique this candidate image for a fashion extraction workflow.
+
+Theme: ${theme}
+Candidate title: ${candidate.title}
+Image URL: ${candidate.imageUrl}
+Source URL: ${candidate.sourceUrl}
+Current category: ${candidate.category} / ${candidate.subcategory}
+
+Score 0-100 for:
+- theme match
+- visible clothing/accessory relevance
+- product/reference photo clarity
+- extraction suitability
+- no collage, no heavy background, no tiny thumbnail
+
+Reject anything that is not clearly fashion/clothing/accessory, is a logo-only image, collage, blocked image, or has no visible extractable item.
+
+Return ONLY JSON:
+{ "score": 87, "category": "Indian Wear", "subcategory": "Kurtas", "critique": "Strong summer Indian menswear match with visible garment.", "reject": false }`;
+
+  const text = imagePart
+    ? await generateGeminiText([imagePart, { text: prompt }])
+    : await generateGeminiText(prompt);
+  const parsed = parseJson<GeminiCritique>(text);
+  const score = clamp(Math.round(Number(parsed.score ?? candidate.confidence)), 0, 100);
 
   return {
-    confidence: Math.max(35, Math.min(96, confidence)),
-    qualityFlags,
-    reason: qualityFlags.includes('extractable-framing')
-      ? `Strong ${intent.subcategory.toLowerCase()} match with extraction-friendly framing cues.`
-      : `Relevant ${intent.subcategory.toLowerCase()} source; review image clarity before import.`,
+    score,
+    category: String(parsed.category || candidate.category),
+    subcategory: String(parsed.subcategory || candidate.subcategory),
+    critique: String(parsed.critique || candidate.reason),
+    reject: Boolean(parsed.reject) || score < MIN_SCOUT_SCORE,
   };
 }
 
-function detectSeason(input: string) {
-  if (/summer|resort|vacation|beach|heat/i.test(input)) return 'summer';
-  if (/winter|cold|snow|wool/i.test(input)) return 'winter';
-  if (/monsoon|rain/i.test(input)) return 'monsoon';
-  if (/festive|diwali|eid|wedding|party/i.test(input)) return 'festive';
-  return 'all-season';
+async function generateGeminiText(prompt: string | Part[]) {
+  const key = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+  if (!key) throw new Error('Missing VITE_GEMINI_API_KEY.');
+  const genAI = new GoogleGenerativeAI(key);
+  const model = genAI.getGenerativeModel({ model: SCOUT_TEXT_MODEL });
+  const result = await model.generateContent(prompt);
+  return result.response.text();
 }
 
-function seasonMood(season: string) {
-  const moods: Record<string, string> = {
-    summer: 'breathable',
-    winter: 'layered',
-    monsoon: 'weather-smart',
-    festive: 'celebratory',
-    'all-season': 'versatile',
+async function generateGeminiTextWithGoogleSearch(prompt: string) {
+  const key = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+  if (!key) throw new Error('Missing VITE_GEMINI_API_KEY.');
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${SCOUT_TEXT_MODEL}:generateContent?key=${encodeURIComponent(key)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      tools: [{ google_search: {} }],
+      generationConfig: {
+        temperature: 0.35,
+        responseMimeType: 'application/json',
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const details = await response.text().catch(() => '');
+    throw new Error(`Gemini Scout search failed (${response.status}). ${details.slice(0, 180)}`);
+  }
+
+  const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+  return data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? '').join('\n') ?? '';
+}
+
+function normalizeGeminiCandidate(
+  candidate: GeminiCandidate,
+  theme: string,
+  collection: string,
+  collectionTitle: string,
+  query: ScoutSearchQuery | undefined,
+  index: number,
+): ScoutCandidate | null {
+  const imageUrl = String(candidate.imageUrl || candidate.thumbnailUrl || '').trim();
+  if (!isUsableImageUrl(imageUrl)) return null;
+
+  const sourceUrl = String(candidate.sourceUrl || imageUrl).trim();
+  const title = String(candidate.title || query?.subcategory || `Scout image ${index + 1}`).trim();
+
+  return {
+    id: `scout-${stableHash(`${theme}-${imageUrl}-${index}`)}`,
+    title,
+    imageUrl,
+    thumbnailUrl: String(candidate.thumbnailUrl || imageUrl).trim(),
+    sourceUrl,
+    sourceName: String(candidate.sourceName || sourceNameFromUrl(sourceUrl)).trim(),
+    licenseLabel: String(candidate.licenseLabel || 'Rights confirmation required').trim(),
+    category: String(candidate.category || query?.category || 'Accessories').trim(),
+    subcategory: String(candidate.subcategory || query?.subcategory || 'Reference').trim(),
+    confidence: clamp(Math.round(Number(candidate.score ?? 70)), 0, 100),
+    reason: String(candidate.critique || 'Gemini found this as a potentially extractable fashion reference.').trim(),
+    query: String(candidate.query || query?.query || theme).trim(),
+    collection,
+    collectionTitle,
+    brief: theme,
+    status: 'suggested',
   };
-  return moods[season] ?? 'versatile';
+}
+
+function fallbackSearchPlan(theme: string, imageCount: number): ScoutSearchQuery[] {
+  const lower = theme.toLowerCase();
+  const indian = /indian|desi|kurta|sherwani|nehru|jutti/.test(lower);
+  const men = /men|mens|male|boy/.test(lower);
+  const base = men ? 'men' : /women|female|girl/.test(lower) ? 'women' : 'fashion';
+  const seed = indian
+    ? [
+        ['Indian Wear', 'Kurtas', `${base} ${theme} cotton kurta product photo`],
+        ['Indian Wear', 'Nehru Jackets', `${base} ${theme} nehru jacket product photo`],
+        ['Bottomwear', 'Trousers', `${base} ${theme} linen trousers product photo`],
+        ['Footwear', 'Juttis', `${base} ${theme} jutti footwear product photo`],
+        ['Accessories', 'Scarves', `${base} ${theme} lightweight stole scarf product photo`],
+        ['Bags', 'Tote Bags', `${base} ${theme} tote bag product photo`],
+      ]
+    : [
+        ['Topwear', 'Tops', `${theme} topwear product photo`],
+        ['Bottomwear', 'Bottoms', `${theme} pants product photo`],
+        ['Outerwear', 'Outerwear', `${theme} jacket product photo`],
+        ['Footwear', 'Shoes', `${theme} shoes product photo`],
+        ['Bags', 'Bags', `${theme} bag product photo`],
+        ['Accessories', 'Accessories', `${theme} accessories product photo`],
+      ];
+
+  return seed.slice(0, Math.max(4, Math.min(seed.length, imageCount))).map(([category, subcategory, query], index) => ({
+    category,
+    subcategory,
+    query,
+    priority: 100 - index * 5,
+  }));
+}
+
+async function imageUrlToGeminiPart(imageUrl: string): Promise<Part> {
+  const response = await fetch(imageUrl, { mode: 'cors' });
+  if (!response.ok) throw new Error('Could not fetch image for critique.');
+  const blob = await response.blob();
+  if (!blob.type.startsWith('image/')) throw new Error('Critique URL is not an image.');
+  const data = await blobToBase64(blob);
+  return { inlineData: { data, mimeType: blob.type || 'image/jpeg' } };
+}
+
+function blobToBase64(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read image.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function parseJson<T>(text: string): T {
+  const cleaned = text.replace(/```json|```/g, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end === -1) throw new Error('Gemini did not return JSON.');
+  return JSON.parse(cleaned.slice(start, end + 1)) as T;
+}
+
+function dedupeCandidates(candidates: ScoutCandidate[]) {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = candidate.imageUrl.toLowerCase().replace(/\?.*$/, '');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function isUsableImageUrl(url: string) {
+  if (!/^https?:\/\//i.test(url)) return false;
+  if (/\.(svg|gif)(\?|$)/i.test(url)) return false;
+  return true;
+}
+
+function clamp(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
 }
 
 function slugify(value: string) {
@@ -347,14 +397,6 @@ function titleize(value: string) {
     .join(' ');
 }
 
-function mergeUnique(values: string[]) {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
-}
-
-function uniqueCategories(candidates: ScoutCandidate[]) {
-  return Array.from(new Set(candidates.map((candidate) => candidate.category)));
-}
-
 function stableHash(seed: string) {
   let hash = 2166136261;
   for (let i = 0; i < seed.length; i += 1) {
@@ -368,6 +410,6 @@ function sourceNameFromUrl(url: string) {
   try {
     return new URL(url).hostname.replace(/^www\./, '');
   } catch {
-    return 'Manual source';
+    return 'Web source';
   }
 }

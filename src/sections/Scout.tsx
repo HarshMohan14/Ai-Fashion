@@ -1,121 +1,115 @@
 import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
-  BadgeCheck,
+  AlertCircle,
   Check,
-  ClipboardList,
   Compass,
   ExternalLink,
-  ImagePlus,
   Loader2,
   PackageCheck,
   Search,
   ShieldCheck,
   Sparkles,
-  Wand2,
   X,
 } from 'lucide-react';
 import {
-  buildScoutPacks,
-  buildScoutSearchIntents,
-  candidateFromManualUrl,
-  parseScoutBrief,
+  hasScoutGeminiKey,
   scoutCandidateToMetadata,
-  searchScoutImages,
+  searchScoutCandidates,
   type ScoutCandidate,
-  type ScoutCandidateStatus,
 } from '../lib/drScout';
 import { useExtractionQueue } from '../context/ExtractionQueueContext';
 import { useDirector } from '../context/DirectorContext';
 
-const DEFAULT_BRIEF = 'summer indian collection with pastel kurtas, airy palazzos, juttis, oxidized jewelry and tote bags';
+const DEFAULT_THEME = 'summer men Indian collection';
 
 export function Scout() {
-  const [briefText, setBriefText] = useState(DEFAULT_BRIEF);
-  const [manualUrl, setManualUrl] = useState('');
+  const [theme, setTheme] = useState(DEFAULT_THEME);
+  const [imageCount, setImageCount] = useState(12);
   const [candidates, setCandidates] = useState<ScoutCandidate[]>([]);
-  const [confirmedIds, setConfirmedIds] = useState<Set<string>>(() => new Set());
-  const [searching, setSearching] = useState(false);
-  const [importingId, setImportingId] = useState<string | null>(null);
-  const [activeCategory, setActiveCategory] = useState('All');
+  const [approvedIds, setApprovedIds] = useState<Set<string>>(() => new Set());
+  const [rightsConfirmed, setRightsConfirmed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const { addJobFromUrl } = useExtractionQueue();
   const director = useDirector();
 
-  const brief = useMemo(() => parseScoutBrief(briefText), [briefText]);
-  const intents = useMemo(() => buildScoutSearchIntents(brief), [brief]);
-  const packs = useMemo(() => buildScoutPacks(candidates.filter((candidate) => candidate.status !== 'rejected')), [candidates]);
-  const categories = useMemo(() => ['All', ...Array.from(new Set(candidates.map((candidate) => candidate.category)))], [candidates]);
-  const visibleCandidates = candidates.filter((candidate) => activeCategory === 'All' || candidate.category === activeCategory);
-  const approvedCount = candidates.filter((candidate) => candidate.status === 'approved' || candidate.status === 'imported').length;
+  const approvedCandidates = useMemo(
+    () => candidates.filter((candidate) => approvedIds.has(candidate.id) && candidate.status !== 'imported'),
+    [approvedIds, candidates],
+  );
+
+  const scoutImages = async () => {
+    setLoading(true);
+    setError(null);
+    setCandidates([]);
+    setApprovedIds(new Set());
+
+    try {
+      const results = await searchScoutCandidates(theme, imageCount);
+      setCandidates(results);
+      if (results.length === 0) {
+        setError('Gemini searched, but did not return extractable image URLs. Try a more specific clothing theme.');
+      }
+      director.push('Dr. Scout', `Found ${results.length} Gemini-critiqued images for “${theme}”.`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Dr. Scout could not search images.';
+      setError(message);
+      director.push('Dr. Scout', message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const updateCandidate = (id: string, patch: Partial<ScoutCandidate>) => {
     setCandidates((current) => current.map((candidate) => (candidate.id === id ? { ...candidate, ...patch } : candidate)));
   };
 
-  const setCandidateStatus = (id: string, status: ScoutCandidateStatus) => updateCandidate(id, { status });
-
-  const runScout = async () => {
-    setSearching(true);
-    try {
-      const results = await searchScoutImages(intents, brief);
-      setCandidates(results);
-      setConfirmedIds(new Set());
-      setActiveCategory('All');
-      director.push('Dr. Scout', `Found ${results.length} reference candidates for ${brief.title}.`);
-    } finally {
-      setSearching(false);
-    }
+  const approveCandidate = (candidate: ScoutCandidate) => {
+    updateCandidate(candidate.id, { status: 'approved' });
+    setApprovedIds((current) => new Set(current).add(candidate.id));
   };
 
-  const addManualCandidate = () => {
-    const url = manualUrl.trim();
-    if (!url) return;
-    const intent = intents[0];
-    const candidate = candidateFromManualUrl(url, brief, intent);
-    setCandidates((current) => [candidate, ...current]);
-    setManualUrl('');
-    director.push('Dr. Scout', 'Manual source added to the scout board.');
-  };
-
-  const toggleConfirmed = (id: string) => {
-    setConfirmedIds((current) => {
+  const rejectCandidate = (candidate: ScoutCandidate) => {
+    updateCandidate(candidate.id, { status: 'rejected' });
+    setApprovedIds((current) => {
       const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      next.delete(candidate.id);
       return next;
     });
   };
 
-  const importCandidate = async (candidate: ScoutCandidate) => {
-    if (!confirmedIds.has(candidate.id)) {
-      director.push('Dr. Scout', 'Confirm image usage rights before sending this reference to the Extraction Lab.');
+  const sendApprovedToExtraction = async () => {
+    if (!rightsConfirmed) {
+      director.push('Dr. Scout', 'Confirm image usage rights before sending approved images to Extraction Lab.');
       return;
     }
 
-    setImportingId(candidate.id);
-    updateCandidate(candidate.id, { status: 'approved' });
-    try {
-      const jobId = await addJobFromUrl(candidate.imageUrl, scoutCandidateToMetadata(candidate));
-      updateCandidate(candidate.id, { status: 'imported' });
-      director.push('Dr. Scout', `Sent ${candidate.subcategory} to Dr. Scientist as extraction job ${jobId.slice(0, 8)}.`);
-    } catch (error) {
-      updateCandidate(candidate.id, { status: 'failed' });
-      director.push(
-        'Dr. Scout',
-        error instanceof Error
-          ? error.message
-          : 'Could not import that Scout source. Try a direct image URL or upload manually.',
-      );
-    } finally {
-      setImportingId(null);
+    if (approvedCandidates.length === 0) {
+      director.push('Dr. Scout', 'Approve at least one image before sending to Extraction Lab.');
+      return;
     }
-  };
 
-  const approvePack = async (candidateIds: string[]) => {
-    for (const candidate of candidates.filter((item) => candidateIds.includes(item.id))) {
-      if (!confirmedIds.has(candidate.id) || candidate.status === 'imported') continue;
-      await importCandidate(candidate);
+    setSending(true);
+    let sent = 0;
+    let failed = 0;
+
+    for (const candidate of approvedCandidates) {
+      try {
+        await addJobFromUrl(candidate.imageUrl, scoutCandidateToMetadata(candidate));
+        updateCandidate(candidate.id, { status: 'imported' });
+        sent += 1;
+      } catch (err) {
+        updateCandidate(candidate.id, { status: 'failed' });
+        failed += 1;
+        console.warn('[Dr. Scout] Could not send image to Extraction Lab:', err);
+      }
     }
+
+    setSending(false);
+    setApprovedIds(new Set());
+    director.push('Dr. Scout', `Sent ${sent} approved image${sent === 1 ? '' : 's'} to Extraction Lab.${failed ? ` ${failed} failed due to blocked image URLs/CORS.` : ''}`);
   };
 
   return (
@@ -123,156 +117,116 @@ export function Scout() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <div className="eyebrow">Section 09 · Dr. Scout</div>
-          <h1 className="section-title mt-2">Scout Sourcing</h1>
+          <h1 className="section-title mt-2">Scout Images</h1>
           <p className="mt-1.5 max-w-2xl text-sm text-neutral-600 dark:text-neutral-400">
-            Describe a collection and Dr. Scout turns it into category-specific source boards. Approve references,
-            confirm usage rights, and send them straight to Dr. Scientist for extraction and re-rendering.
+            Give Dr. Scout a theme and image count. Gemini searches the web, critiques the candidates, and only then
+            shows images for your approval before Extraction Lab handoff.
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-full border border-lab-border-light bg-white/50 px-3 py-2 text-sm dark:border-lab-border dark:bg-white/[0.03]">
           <Compass className="h-4 w-4 text-cobalt dark:text-indigo_electric" />
-          {approvedCount} approved/imported
+          {approvedCandidates.length} approved
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
-        <div className="bento space-y-4">
-          <div className="flex items-center gap-2">
-            <Wand2 className="h-4 w-4 text-cobalt dark:text-indigo_electric" />
-            <div>
-              <div className="font-display text-2xl">Collection brief</div>
-              <div className="text-xs text-neutral-500">Natural language in, extraction-ready sourcing board out.</div>
-            </div>
+      <div className="bento space-y-4">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_180px_auto] lg:items-end">
+          <div>
+            <label className="eyebrow mb-2 block">Theme</label>
+            <input
+              value={theme}
+              onChange={(event) => setTheme(event.target.value)}
+              className="w-full rounded-2xl border border-lab-border-light bg-white/70 px-4 py-3 text-sm outline-none transition focus:border-cobalt dark:border-lab-border dark:bg-white/[0.03] dark:focus:border-indigo_electric"
+              placeholder="summer men Indian collection"
+            />
           </div>
-          <textarea
-            value={briefText}
-            onChange={(event) => setBriefText(event.target.value)}
-            className="min-h-32 w-full rounded-2xl border border-lab-border-light bg-white/70 p-4 text-sm outline-none transition focus:border-cobalt dark:border-lab-border dark:bg-white/[0.03] dark:focus:border-indigo_electric"
-            placeholder="Example: summer Indian collection with pastel kurtas, airy palazzos, juttis, oxidized jewelry, tote bags…"
-          />
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-            <BriefStat label="Collection" value={brief.title} />
-            <BriefStat label="Season" value={brief.season} />
-            <BriefStat label="Region" value={brief.region} />
+          <div>
+            <label className="eyebrow mb-2 block">Images</label>
+            <input
+              type="number"
+              min={1}
+              max={30}
+              value={imageCount}
+              onChange={(event) => setImageCount(Math.max(1, Math.min(30, Number(event.target.value) || 1)))}
+              className="w-full rounded-2xl border border-lab-border-light bg-white/70 px-4 py-3 text-sm outline-none transition focus:border-cobalt dark:border-lab-border dark:bg-white/[0.03] dark:focus:border-indigo_electric"
+            />
           </div>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <TokenPanel title="Palette" tokens={brief.colors} />
-            <TokenPanel title="Fabrics" tokens={brief.fabrics} />
-          </div>
-          <TokenPanel title="Avoid" tokens={brief.avoid} tone="warning" />
-          <div className="flex flex-wrap gap-2">
-            <button onClick={runScout} disabled={searching} className="btn-primary disabled:opacity-50">
-              {searching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
-              Scout Collection
-            </button>
-            <div className="flex min-w-[280px] flex-1 items-center gap-2 rounded-full border border-lab-border-light bg-white/60 px-3 py-2 dark:border-lab-border dark:bg-white/[0.03]">
-              <ImagePlus className="h-4 w-4 text-neutral-500" />
-              <input
-                value={manualUrl}
-                onChange={(event) => setManualUrl(event.target.value)}
-                className="min-w-0 flex-1 bg-transparent text-sm outline-none"
-                placeholder="Paste direct image URL"
-              />
-              <button onClick={addManualCandidate} className="text-xs font-semibold text-cobalt dark:text-indigo_electric">
-                Add
-              </button>
-            </div>
-          </div>
+          <button onClick={scoutImages} disabled={loading || !theme.trim()} className="btn-primary h-12 disabled:opacity-50">
+            {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+            Scout Images
+          </button>
         </div>
 
-        <div className="bento space-y-4">
-          <div className="flex items-center gap-2">
-            <ClipboardList className="h-4 w-4 text-cobalt dark:text-indigo_electric" />
-            <div>
-              <div className="font-display text-2xl">Scout plan</div>
-              <div className="text-xs text-neutral-500">Queries Dr. Scout will use for this drop.</div>
-            </div>
+        {!hasScoutGeminiKey() && (
+          <div className="flex items-start gap-2 rounded-2xl border border-amber-400/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            Add VITE_GEMINI_API_KEY to enable Gemini web scouting and candidate critique.
           </div>
-          <div className="max-h-[415px] space-y-2 overflow-y-auto pr-1 custom-scroll">
-            {intents.map((intent) => (
-              <div key={intent.id} className="rounded-2xl border border-lab-border-light bg-black/[0.02] p-3 dark:border-lab-border dark:bg-white/[0.03]">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold">{intent.subcategory}</div>
-                    <div className="mt-1 text-xs text-neutral-500">{intent.query}</div>
-                  </div>
-                  <span className="chip shrink-0">P{intent.priority}</span>
-                </div>
-              </div>
-            ))}
+        )}
+
+        {error && (
+          <div className="flex items-start gap-2 rounded-2xl border border-rose-400/40 bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-300">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            {error}
           </div>
-        </div>
+        )}
       </div>
-
-      {packs.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {packs.map((pack) => (
-            <div key={pack.id} className="bento flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="eyebrow">Scout Pack</div>
-                <div className="font-display text-2xl">{pack.name}</div>
-                <p className="mt-1 text-sm text-neutral-500">{pack.description}</p>
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {pack.categoryCoverage.map((category) => <span key={category} className="chip">{category}</span>)}
-                </div>
-              </div>
-              <button
-                onClick={() => approvePack(pack.candidateIds)}
-                className="rounded-full border border-lab-border-light px-4 py-2 text-sm font-medium hover:bg-black/5 dark:border-lab-border dark:hover:bg-white/5"
-              >
-                Send confirmed pack
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
 
       <div className="bento space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div className="eyebrow">Candidate Board</div>
-            <div className="font-display text-2xl">Approve references for extraction</div>
+            <div className="eyebrow">Gemini-critiqued candidates</div>
+            <div className="font-display text-2xl">Approve images before extraction</div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {categories.map((category) => (
-              <button
-                key={category}
-                onClick={() => setActiveCategory(category)}
-                className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                  activeCategory === category
-                    ? 'bg-black text-white dark:bg-white dark:text-black'
-                    : 'bg-black/5 text-neutral-600 hover:bg-black/10 dark:bg-white/[0.06] dark:text-neutral-300'
-                }`}
-              >
-                {category}
-              </button>
-            ))}
-          </div>
+          <button
+            onClick={sendApprovedToExtraction}
+            disabled={sending || approvedCandidates.length === 0 || !rightsConfirmed}
+            className="rounded-full bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-white dark:text-black"
+          >
+            {sending ? <Loader2 className="mr-2 inline h-3.5 w-3.5 animate-spin" /> : <PackageCheck className="mr-2 inline h-3.5 w-3.5" />}
+            Send {approvedCandidates.length} Approved to Extraction Lab
+          </button>
         </div>
 
-        {visibleCandidates.length === 0 ? (
-          <div className="grid min-h-64 place-items-center rounded-3xl border border-dashed border-lab-border-light p-8 text-center dark:border-lab-border">
+        {candidates.length > 0 && (
+          <label className="flex cursor-pointer items-start gap-2 rounded-2xl border border-lab-border-light bg-black/[0.02] p-3 text-xs leading-relaxed dark:border-lab-border dark:bg-white/[0.03]">
+            <input type="checkbox" checked={rightsConfirmed} onChange={() => setRightsConfirmed((value) => !value)} className="mt-0.5" />
+            <span>
+              I confirm I have rights or permission to use approved source images for wardrobe extraction.
+            </span>
+          </label>
+        )}
+
+        {loading ? (
+          <div className="grid min-h-72 place-items-center rounded-3xl border border-dashed border-lab-border-light p-8 text-center dark:border-lab-border">
+            <div>
+              <Loader2 className="mx-auto h-10 w-10 animate-spin text-cobalt dark:text-indigo_electric" />
+              <div className="mt-4 font-display text-2xl">Dr. Scout is searching...</div>
+              <p className="mt-1 max-w-md text-sm text-neutral-500">
+                Gemini is planning searches, checking web results, and critiquing images before showing them here.
+              </p>
+            </div>
+          </div>
+        ) : candidates.length === 0 ? (
+          <div className="grid min-h-72 place-items-center rounded-3xl border border-dashed border-lab-border-light p-8 text-center dark:border-lab-border">
             <div>
               <Sparkles className="mx-auto h-8 w-8 text-neutral-400" />
-              <div className="mt-3 font-display text-2xl">No Scout board yet</div>
+              <div className="mt-3 font-display text-2xl">No images scouted yet</div>
               <p className="mt-1 max-w-md text-sm text-neutral-500">
-                Run a collection scout or paste a direct image URL to start sending references into the Extraction Lab.
+                Enter a theme like “summer men Indian collection”, choose how many images you want, and click Scout Images.
               </p>
             </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {visibleCandidates.map((candidate, index) => (
+            {candidates.map((candidate, index) => (
               <CandidateCard
                 key={candidate.id}
                 candidate={candidate}
                 delay={index * 0.03}
-                confirmed={confirmedIds.has(candidate.id)}
-                importing={importingId === candidate.id}
-                onConfirm={() => toggleConfirmed(candidate.id)}
-                onShortlist={() => setCandidateStatus(candidate.id, 'shortlisted')}
-                onReject={() => setCandidateStatus(candidate.id, 'rejected')}
-                onImport={() => importCandidate(candidate)}
+                approved={approvedIds.has(candidate.id)}
+                onApprove={() => approveCandidate(candidate)}
+                onReject={() => rejectCandidate(candidate)}
               />
             ))}
           </div>
@@ -282,48 +236,20 @@ export function Scout() {
   );
 }
 
-function BriefStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-lab-border-light bg-black/[0.02] p-3 dark:border-lab-border dark:bg-white/[0.03]">
-      <div className="eyebrow">{label}</div>
-      <div className="mt-1 text-sm font-semibold capitalize">{value}</div>
-    </div>
-  );
-}
-
-function TokenPanel({ title, tokens, tone = 'default' }: { title: string; tokens: string[]; tone?: 'default' | 'warning' }) {
-  return (
-    <div className="rounded-2xl border border-lab-border-light bg-black/[0.02] p-3 dark:border-lab-border dark:bg-white/[0.03]">
-      <div className="eyebrow mb-2">{title}</div>
-      <div className="flex flex-wrap gap-1.5">
-        {tokens.map((token) => (
-          <span key={token} className={`chip ${tone === 'warning' ? 'text-amber-700 dark:text-amber-300' : ''}`}>{token}</span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function CandidateCard({
   candidate,
   delay,
-  confirmed,
-  importing,
-  onConfirm,
-  onShortlist,
+  approved,
+  onApprove,
   onReject,
-  onImport,
 }: {
   candidate: ScoutCandidate;
   delay: number;
-  confirmed: boolean;
-  importing: boolean;
-  onConfirm: () => void;
-  onShortlist: () => void;
+  approved: boolean;
+  onApprove: () => void;
   onReject: () => void;
-  onImport: () => void;
 }) {
-  const disabled = candidate.status === 'imported' || candidate.status === 'rejected' || importing;
+  const disabled = candidate.status === 'imported' || candidate.status === 'rejected' || candidate.status === 'failed';
 
   return (
     <motion.div
@@ -334,24 +260,34 @@ function CandidateCard({
     >
       <div className="relative aspect-[4/5] overflow-hidden bg-white">
         <img
-          src={candidate.thumbnailUrl}
+          src={candidate.thumbnailUrl || candidate.imageUrl}
           alt={candidate.title}
           className="h-full w-full object-cover transition duration-700 group-hover:scale-105"
           loading="lazy"
           referrerPolicy="no-referrer"
         />
         <div className="absolute left-3 top-3 flex flex-wrap gap-1.5">
-          <span className="rounded-full bg-black/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white">
-            {candidate.confidence}% fit
+          <span className="rounded-full bg-black/75 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white">
+            {candidate.confidence}% Gemini
           </span>
-          {candidate.status !== 'suggested' && (
+          {approved && candidate.status !== 'imported' && (
             <span className="rounded-full bg-emerald-500 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white">
-              {candidate.status}
+              Approved
+            </span>
+          )}
+          {candidate.status === 'imported' && (
+            <span className="rounded-full bg-cobalt px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white dark:bg-indigo_electric">
+              Sent
+            </span>
+          )}
+          {candidate.status === 'failed' && (
+            <span className="rounded-full bg-rose-500 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white">
+              Failed
             </span>
           )}
         </div>
         <a
-          href={candidate.sourceUrl}
+          href={candidate.sourceUrl || candidate.imageUrl}
           target="_blank"
           rel="noreferrer"
           className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-full bg-black/50 text-white backdrop-blur transition hover:bg-cobalt"
@@ -372,33 +308,20 @@ function CandidateCard({
           <span className="chip">{candidate.sourceName}</span>
           <span className="chip">{candidate.licenseLabel}</span>
         </div>
-        <label className="flex cursor-pointer items-start gap-2 rounded-2xl border border-lab-border-light bg-black/[0.02] p-3 text-xs leading-relaxed dark:border-lab-border dark:bg-white/[0.03]">
-          <input type="checkbox" checked={confirmed} onChange={onConfirm} className="mt-0.5" />
-          <span>
-            I confirm I have rights or permission to use this source for wardrobe extraction.
-          </span>
-        </label>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           <button
-            onClick={onShortlist}
+            onClick={onApprove}
             disabled={disabled}
-            className="rounded-xl border border-lab-border-light px-2 py-2 text-xs font-medium hover:bg-black/5 disabled:opacity-40 dark:border-lab-border dark:hover:bg-white/5"
+            className={`rounded-xl px-3 py-2 text-xs font-medium transition disabled:opacity-40 ${approved ? 'bg-emerald-500 text-white' : 'border border-lab-border-light hover:bg-black/5 dark:border-lab-border dark:hover:bg-white/5'}`}
           >
-            <BadgeCheck className="mx-auto h-3.5 w-3.5" />
+            <Check className="mx-auto h-3.5 w-3.5" />
           </button>
           <button
             onClick={onReject}
             disabled={disabled}
-            className="rounded-xl border border-lab-border-light px-2 py-2 text-xs font-medium hover:bg-rose-500 hover:text-white disabled:opacity-40 dark:border-lab-border"
+            className="rounded-xl border border-lab-border-light px-3 py-2 text-xs font-medium transition hover:bg-rose-500 hover:text-white disabled:opacity-40 dark:border-lab-border"
           >
             <X className="mx-auto h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={onImport}
-            disabled={disabled || !confirmed}
-            className="rounded-xl bg-black px-2 py-2 text-xs font-medium text-white disabled:opacity-40 dark:bg-white dark:text-black"
-          >
-            {importing ? <Loader2 className="mx-auto h-3.5 w-3.5 animate-spin" /> : candidate.status === 'imported' ? <Check className="mx-auto h-3.5 w-3.5" /> : <PackageCheck className="mx-auto h-3.5 w-3.5" />}
           </button>
         </div>
         {candidate.status === 'imported' && (
