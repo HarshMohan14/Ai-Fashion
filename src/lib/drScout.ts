@@ -14,6 +14,7 @@ export type ScoutCandidate = {
   title: string;
   imageUrl: string;
   thumbnailUrl: string;
+  verifiedImageUrl: string;
   sourceUrl: string;
   sourceName: string;
   licenseLabel: string;
@@ -26,6 +27,10 @@ export type ScoutCandidate = {
   collectionTitle: string;
   brief: string;
   status: ScoutCandidateStatus;
+  imageWidth?: number;
+  imageHeight?: number;
+  availabilityStatus: 'verified' | 'unverified' | 'unavailable';
+  availabilityMessage?: string;
 };
 
 type GeminiCandidate = Partial<{
@@ -52,8 +57,20 @@ type GeminiCritique = Partial<{
   reject: boolean;
 }>;
 
+type ImageValidation = {
+  ok: boolean;
+  url: string;
+  width?: number;
+  height?: number;
+  message?: string;
+};
+
 const SCOUT_TEXT_MODEL = import.meta.env.VITE_GEMINI_SCOUT_MODEL || 'gemini-2.5-flash';
 const MIN_SCOUT_SCORE = 65;
+const MIN_IMAGE_EDGE = 300;
+const SCOUT_MAX_ATTEMPTS = 3;
+const IMAGE_TIMEOUT_MS = 10_000;
+const GEMINI_RETRY_COUNT = 2;
 
 export function hasScoutGeminiKey() {
   return Boolean(import.meta.env.VITE_GEMINI_API_KEY);
@@ -65,12 +82,33 @@ export async function searchScoutCandidates(theme: string, imageCount: number): 
   if (!hasScoutGeminiKey()) throw new Error('Missing VITE_GEMINI_API_KEY. Dr. Scout needs Gemini to search and critique images.');
 
   const targetCount = clamp(Math.round(imageCount || 1), 1, 30);
-  const plan = await createScoutSearchPlan(cleanTheme, targetCount);
-  const rawCandidates = await findScoutImagesWithGemini(cleanTheme, targetCount, plan);
-  const critiqued = await critiqueScoutCandidates(cleanTheme, targetCount, rawCandidates);
+  const basePlan = await createScoutSearchPlan(cleanTheme, targetCount);
+  const accepted: ScoutCandidate[] = [];
+  const seen = new Set<string>();
 
-  return critiqued
-    .filter((candidate) => candidate.confidence >= MIN_SCOUT_SCORE && isUsableImageUrl(candidate.imageUrl))
+  for (let attempt = 1; attempt <= SCOUT_MAX_ATTEMPTS && accepted.length < targetCount; attempt += 1) {
+    const plan = attempt === 1 ? basePlan : expandSearchPlan(cleanTheme, targetCount, basePlan, attempt);
+    const rawCandidates = await findScoutImagesWithGemini(cleanTheme, targetCount, plan, attempt);
+    const unseen = rawCandidates.filter((candidate) => {
+      const key = candidateIdentity(candidate);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    const verified = await verifyScoutCandidates(unseen);
+    const critiqued = await critiqueScoutCandidates(cleanTheme, targetCount, verified);
+    accepted.push(
+      ...critiqued.filter(
+        (candidate) =>
+          candidate.confidence >= MIN_SCOUT_SCORE &&
+          candidate.availabilityStatus === 'verified' &&
+          isUsableImageUrl(candidate.verifiedImageUrl),
+      ),
+    );
+  }
+
+  return dedupeCandidates(accepted)
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, targetCount);
 }
@@ -91,7 +129,7 @@ Return ONLY JSON:
 }`;
 
   try {
-    const text = await generateGeminiText(prompt);
+    const text = await generateGeminiText(prompt, true);
     const parsed = parseJson<GeminiPlan>(text);
     const queries = (parsed.queries ?? [])
       .filter((item) => item.query && item.category && item.subcategory)
@@ -122,22 +160,27 @@ export function scoutCandidateToMetadata(candidate: ScoutCandidate) {
     scout_collection_title: candidate.collectionTitle,
     scout_category_hint: candidate.category,
     scout_subcategory_hint: candidate.subcategory,
+    scout_verified_image_url: candidate.verifiedImageUrl,
+    scout_image_width: candidate.imageWidth ?? null,
+    scout_image_height: candidate.imageHeight ?? null,
   };
 }
 
-async function findScoutImagesWithGemini(theme: string, imageCount: number, plan: ScoutSearchQuery[]) {
-  const prompt = `You are Dr. Scout. Use Google Search to find direct image URLs for fashion sourcing.
+async function findScoutImagesWithGemini(theme: string, imageCount: number, plan: ScoutSearchQuery[], attempt: number) {
+  const prompt = `You are Dr. Scout. Use Google Search to find direct, currently available image URLs for fashion sourcing.
 
 Theme: ${theme}
 Images needed: ${imageCount}
+Attempt: ${attempt}
 Search plan:
 ${JSON.stringify(plan, null, 2)}
 
-Find ${Math.min(imageCount * 2, 40)} candidate clothing/accessory reference images from the public web.
+Find ${Math.min(imageCount * 3, 60)} candidate clothing/accessory reference images from the public web.
 Rules:
-- Return direct image URLs when possible. imageUrl must be a downloadable image file URL, not only a page URL.
+- imageUrl must be a direct downloadable image URL, not only a product/page URL.
 - Prefer product/catalog/reference photos where a single garment or accessory is clearly visible.
-- Avoid collages, screenshots, watermarked images, runway crowds, tiny thumbnails, and heavily cluttered backgrounds.
+- Prefer image URLs ending in jpg, jpeg, png, webp, or avif and avoid SVG/GIF.
+- Avoid expired CDN links, search-result thumbnails, collages, screenshots, watermarked images, runway crowds, tiny thumbnails, and cluttered backgrounds.
 - Match the theme exactly.
 - Include sourceUrl for attribution/audit.
 - If unsure about license, use "Rights confirmation required".
@@ -161,50 +204,129 @@ Return ONLY compact JSON:
   ]
 }`;
 
-  const text = await generateGeminiTextWithGoogleSearch(prompt);
-  const parsed = parseJson<{ candidates?: GeminiCandidate[] }>(text);
+  let text = '';
+  try {
+    text = await generateGeminiTextWithGoogleSearch(prompt);
+    const parsed = parseGeminiCandidates(text);
+    return normalizeGeminiCandidates(parsed, theme, plan);
+  } catch (error) {
+    console.warn('[Dr. Scout] Gemini search response was not usable; attempting JSON repair.', error);
+  }
+
+  try {
+    const repaired = await repairGeminiJson(text, 'candidates');
+    return normalizeGeminiCandidates(parseGeminiCandidates(repaired), theme, plan);
+  } catch (error) {
+    console.warn('[Dr. Scout] Gemini search JSON repair failed; continuing with no candidates for this attempt.', error);
+    return [];
+  }
+}
+
+function normalizeGeminiCandidates(candidates: GeminiCandidate[], theme: string, plan: ScoutSearchQuery[]) {
   const collection = slugify(theme);
   const collectionTitle = titleize(theme);
 
-  return (parsed.candidates ?? [])
+  return candidates
     .map((candidate, index) => normalizeGeminiCandidate(candidate, theme, collection, collectionTitle, plan[index % Math.max(plan.length, 1)], index))
     .filter((candidate): candidate is ScoutCandidate => Boolean(candidate));
 }
 
-async function critiqueScoutCandidates(theme: string, imageCount: number, candidates: ScoutCandidate[]) {
-  const unique = dedupeCandidates(candidates).slice(0, Math.min(Math.max(imageCount * 2, imageCount), 40));
-  const critiqued: ScoutCandidate[] = [];
+function parseGeminiCandidates(text: string) {
+  const parsed = parseJson<{ candidates?: GeminiCandidate[] } | GeminiCandidate[]>(text);
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed.candidates)) return parsed.candidates;
+  throw new Error('Gemini did not return a candidates array.');
+}
 
-  for (const candidate of unique) {
+async function verifyScoutCandidates(candidates: ScoutCandidate[]) {
+  const verified = await mapWithConcurrency<ScoutCandidate, ScoutCandidate | null>(candidates, 5, async (candidate) => {
+    const validation = await validateCandidateImage(candidate);
+    if (!validation.ok) {
+      console.warn('[Dr. Scout] Candidate image unavailable; rejecting.', { title: candidate.title, url: validation.url, reason: validation.message });
+      return null;
+    }
+
+    return {
+      ...candidate,
+      verifiedImageUrl: validation.url,
+      imageWidth: validation.width,
+      imageHeight: validation.height,
+      availabilityStatus: 'verified' as const,
+      availabilityMessage: validation.message,
+    };
+  });
+
+  return verified.filter((candidate): candidate is ScoutCandidate => Boolean(candidate));
+}
+
+async function validateCandidateImage(candidate: ScoutCandidate): Promise<ImageValidation> {
+  const urls = uniqueUrls([candidate.imageUrl, candidate.thumbnailUrl]);
+  let lastMessage = 'No usable image URL found.';
+
+  for (const url of urls) {
+    if (!isUsableImageUrl(url)) {
+      lastMessage = 'URL is not a supported direct image candidate.';
+      continue;
+    }
+
     try {
-      const critique = await critiqueScoutCandidate(theme, candidate);
-      if (!critique.reject) {
-        critiqued.push({
-          ...candidate,
-          confidence: critique.score,
-          category: critique.category || candidate.category,
-          subcategory: critique.subcategory || candidate.subcategory,
-          reason: critique.critique || candidate.reason,
-        });
+      const fetched = await fetchImageBlob(url);
+      const objectUrl = URL.createObjectURL(fetched.blob);
+      const dimensions = await loadImageDimensions(objectUrl).finally(() => URL.revokeObjectURL(objectUrl));
+
+      if (dimensions.width < MIN_IMAGE_EDGE || dimensions.height < MIN_IMAGE_EDGE) {
+        lastMessage = `Image is too small (${dimensions.width}×${dimensions.height}).`;
+        continue;
       }
+
+      return {
+        ok: true,
+        url,
+        width: dimensions.width,
+        height: dimensions.height,
+        message: `Verified ${dimensions.width}×${dimensions.height} ${fetched.mimeType}.`,
+      };
     } catch (error) {
-      console.warn('[Dr. Scout] Candidate critique failed; keeping Gemini search score.', error);
-      critiqued.push(candidate);
+      lastMessage = error instanceof Error ? error.message : 'Image could not be loaded.';
     }
   }
 
-  return critiqued;
+  return { ok: false, url: urls[0] || candidate.imageUrl, message: lastMessage };
+}
+
+async function critiqueScoutCandidates(theme: string, imageCount: number, candidates: ScoutCandidate[]) {
+  const unique = dedupeCandidates(candidates).slice(0, Math.min(Math.max(imageCount * 3, imageCount), 60));
+  const critiqued = await mapWithConcurrency<ScoutCandidate, ScoutCandidate | null>(unique, 3, async (candidate) => {
+    try {
+      const critique = await critiqueScoutCandidate(theme, candidate);
+      if (critique.reject) return null;
+
+      return {
+        ...candidate,
+        confidence: critique.score,
+        category: critique.category || candidate.category,
+        subcategory: critique.subcategory || candidate.subcategory,
+        reason: critique.critique || candidate.reason,
+      };
+    } catch (error) {
+      console.warn('[Dr. Scout] Candidate critique failed; rejecting candidate instead of showing an unverified image.', error);
+      return null;
+    }
+  });
+
+  return critiqued.filter((candidate): candidate is ScoutCandidate => Boolean(candidate));
 }
 
 async function critiqueScoutCandidate(theme: string, candidate: ScoutCandidate): Promise<Required<GeminiCritique>> {
-  const imagePart = await imageUrlToGeminiPart(candidate.imageUrl).catch(() => null);
+  const imagePart = await imageUrlToGeminiPart(candidate.verifiedImageUrl);
   const prompt = `You are Dr. Scout. Critique this candidate image for a fashion extraction workflow.
 
 Theme: ${theme}
 Candidate title: ${candidate.title}
-Image URL: ${candidate.imageUrl}
+Image URL: ${candidate.verifiedImageUrl}
 Source URL: ${candidate.sourceUrl}
 Current category: ${candidate.category} / ${candidate.subcategory}
+Image availability: ${candidate.availabilityMessage || 'verified'}
 
 Score 0-100 for:
 - theme match
@@ -218,53 +340,89 @@ Reject anything that is not clearly fashion/clothing/accessory, is a logo-only i
 Return ONLY JSON:
 { "score": 87, "category": "Indian Wear", "subcategory": "Kurtas", "critique": "Strong summer Indian menswear match with visible garment.", "reject": false }`;
 
-  const text = imagePart
-    ? await generateGeminiText([imagePart, { text: prompt }])
-    : await generateGeminiText(prompt);
-  const parsed = parseJson<GeminiCritique>(text);
-  const score = clamp(Math.round(Number(parsed.score ?? candidate.confidence)), 0, 100);
+  let text = '';
+  try {
+    text = await generateGeminiText([imagePart, { text: prompt }], true);
+    const parsed = parseJson<GeminiCritique>(text);
+    const score = clamp(Math.round(Number(parsed.score ?? candidate.confidence)), 0, 100);
 
-  return {
-    score,
-    category: String(parsed.category || candidate.category),
-    subcategory: String(parsed.subcategory || candidate.subcategory),
-    critique: String(parsed.critique || candidate.reason),
-    reject: Boolean(parsed.reject) || score < MIN_SCOUT_SCORE,
-  };
+    return {
+      score,
+      category: String(parsed.category || candidate.category),
+      subcategory: String(parsed.subcategory || candidate.subcategory),
+      critique: String(parsed.critique || candidate.reason),
+      reject: Boolean(parsed.reject) || score < MIN_SCOUT_SCORE,
+    };
+  } catch (error) {
+    if (!text.trim()) throw error;
+    console.warn('[Dr. Scout] Gemini critique JSON failed; attempting repair.', error);
+    const repaired = await repairGeminiJson(text, 'critique');
+    const parsed = parseJson<GeminiCritique>(repaired);
+    const score = clamp(Math.round(Number(parsed.score ?? candidate.confidence)), 0, 100);
+
+    return {
+      score,
+      category: String(parsed.category || candidate.category),
+      subcategory: String(parsed.subcategory || candidate.subcategory),
+      critique: String(parsed.critique || candidate.reason),
+      reject: Boolean(parsed.reject) || score < MIN_SCOUT_SCORE,
+    };
+  }
 }
 
-async function generateGeminiText(prompt: string | Part[]) {
+async function generateGeminiText(prompt: string | Part[], preferJson = false) {
   const key = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
   if (!key) throw new Error('Missing VITE_GEMINI_API_KEY.');
   const genAI = new GoogleGenerativeAI(key);
-  const model = genAI.getGenerativeModel({ model: SCOUT_TEXT_MODEL });
-  const result = await model.generateContent(prompt);
-  return result.response.text();
+  const model = genAI.getGenerativeModel({
+    model: SCOUT_TEXT_MODEL,
+    generationConfig: {
+      temperature: 0.2,
+      ...(preferJson ? { responseMimeType: 'application/json' } : {}),
+    },
+  });
+
+  return retryAsync(async () => {
+    const result = await model.generateContent(prompt);
+    return result.response.text();
+  }, GEMINI_RETRY_COUNT);
 }
 
 async function generateGeminiTextWithGoogleSearch(prompt: string) {
   const key = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
   if (!key) throw new Error('Missing VITE_GEMINI_API_KEY.');
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${SCOUT_TEXT_MODEL}:generateContent?key=${encodeURIComponent(key)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      tools: [{ google_search: {} }],
-      generationConfig: {
-        temperature: 0.35,
-      },
-    }),
-  });
+  return retryAsync(async () => {
+    const response = await fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/models/${SCOUT_TEXT_MODEL}:generateContent?key=${encodeURIComponent(key)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        tools: [{ google_search: {} }],
+        generationConfig: {
+          temperature: 0.25,
+        },
+      }),
+    }, 30_000);
 
-  if (!response.ok) {
-    const details = await response.text().catch(() => '');
-    throw new Error(`Gemini Scout search failed (${response.status}). ${details.slice(0, 180)}`);
-  }
+    if (!response.ok) {
+      const details = await response.text().catch(() => '');
+      throw new Error(`Gemini Scout search failed (${response.status}). ${details.slice(0, 180)}`);
+    }
 
-  const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-  return data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? '').join('\n') ?? '';
+    const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    const text = data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? '').join('\n') ?? '';
+    if (!text.trim()) throw new Error('Gemini Scout search returned an empty response.');
+    return text;
+  }, GEMINI_RETRY_COUNT);
+}
+
+async function repairGeminiJson(text: string, shape: 'candidates' | 'critique') {
+  const schema = shape === 'candidates'
+    ? '{ "candidates": [{ "title": "", "imageUrl": "https://...jpg", "thumbnailUrl": "https://...jpg", "sourceUrl": "https://...", "sourceName": "", "licenseLabel": "Rights confirmation required", "category": "", "subcategory": "", "score": 80, "critique": "", "query": "" }] }'
+    : '{ "score": 80, "category": "", "subcategory": "", "critique": "", "reject": false }';
+
+  return generateGeminiText(`Convert this response into ONLY valid JSON matching this schema. Do not add markdown or commentary.\n\nSchema:\n${schema}\n\nResponse:\n${text || '(empty response)'}`, true);
 }
 
 function normalizeGeminiCandidate(
@@ -278,6 +436,7 @@ function normalizeGeminiCandidate(
   const imageUrl = String(candidate.imageUrl || candidate.thumbnailUrl || '').trim();
   if (!isUsableImageUrl(imageUrl)) return null;
 
+  const thumbnailUrl = String(candidate.thumbnailUrl || imageUrl).trim();
   const sourceUrl = String(candidate.sourceUrl || imageUrl).trim();
   const title = String(candidate.title || query?.subcategory || `Scout image ${index + 1}`).trim();
 
@@ -285,7 +444,8 @@ function normalizeGeminiCandidate(
     id: `scout-${stableHash(`${theme}-${imageUrl}-${index}`)}`,
     title,
     imageUrl,
-    thumbnailUrl: String(candidate.thumbnailUrl || imageUrl).trim(),
+    thumbnailUrl,
+    verifiedImageUrl: imageUrl,
     sourceUrl,
     sourceName: String(candidate.sourceName || sourceNameFromUrl(sourceUrl)).trim(),
     licenseLabel: String(candidate.licenseLabel || 'Rights confirmation required').trim(),
@@ -298,6 +458,7 @@ function normalizeGeminiCandidate(
     collectionTitle,
     brief: theme,
     status: 'suggested',
+    availabilityStatus: 'unverified',
   };
 }
 
@@ -332,13 +493,58 @@ function fallbackSearchPlan(theme: string, imageCount: number): ScoutSearchQuery
   }));
 }
 
+function expandSearchPlan(theme: string, imageCount: number, basePlan: ScoutSearchQuery[], attempt: number) {
+  const suffixes = attempt === 2
+    ? ['catalog photo', 'official product image', 'plain background']
+    : ['ecommerce product photo', 'single item photo', 'front view clothing'];
+  const fallback = fallbackSearchPlan(theme, imageCount);
+  const combined = [...basePlan, ...fallback];
+
+  return combined.slice(0, Math.max(4, Math.min(12, imageCount + 4))).map((query, index) => ({
+    ...query,
+    query: `${query.query} ${suffixes[index % suffixes.length]}`,
+    priority: query.priority - attempt * 3,
+  }));
+}
+
 async function imageUrlToGeminiPart(imageUrl: string): Promise<Part> {
-  const response = await fetch(imageUrl, { mode: 'cors' });
-  if (!response.ok) throw new Error('Could not fetch image for critique.');
-  const blob = await response.blob();
-  if (!blob.type.startsWith('image/')) throw new Error('Critique URL is not an image.');
+  const { blob, mimeType } = await fetchImageBlob(imageUrl);
   const data = await blobToBase64(blob);
-  return { inlineData: { data, mimeType: blob.type || 'image/jpeg' } };
+  return { inlineData: { data, mimeType: mimeType || 'image/jpeg' } };
+}
+
+async function fetchImageBlob(imageUrl: string) {
+  const response = await fetchWithTimeout(imageUrl, { mode: 'cors', cache: 'no-store' }, IMAGE_TIMEOUT_MS);
+  if (!response.ok) throw new Error(`Image request failed (${response.status}).`);
+
+  const blob = await response.blob();
+  const mimeType = blob.type || response.headers.get('content-type') || '';
+  if (!mimeType.startsWith('image/')) throw new Error('URL did not resolve to an image file.');
+  if (/svg|gif/i.test(mimeType)) throw new Error('SVG and GIF images are not supported for extraction.');
+  if (blob.size < 1024) throw new Error('Image file is too small or empty.');
+  if (blob.size > 12 * 1024 * 1024) throw new Error('Image file is larger than Scout supports.');
+
+  return { blob, mimeType };
+}
+
+function loadImageDimensions(objectUrl: string) {
+  return new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const image = new Image();
+    const timeout = window.setTimeout(() => {
+      image.src = '';
+      reject(new Error('Image dimension check timed out.'));
+    }, IMAGE_TIMEOUT_MS);
+
+    image.onload = () => {
+      window.clearTimeout(timeout);
+      resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    };
+    image.onerror = () => {
+      window.clearTimeout(timeout);
+      reject(new Error('Image could not be decoded.'));
+    };
+    image.src = objectUrl;
+  });
 }
 
 function blobToBase64(blob: Blob) {
@@ -351,27 +557,130 @@ function blobToBase64(blob: Blob) {
 }
 
 function parseJson<T>(text: string): T {
-  const cleaned = text.replace(/```json|```/g, '').trim();
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('Gemini did not return JSON.');
-  return JSON.parse(cleaned.slice(start, end + 1)) as T;
+  const cleaned = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+  if (!cleaned) throw new Error('Gemini did not return JSON.');
+
+  const direct = tryParseJson<T>(cleaned);
+  if (direct.ok) return direct.value;
+
+  const objectText = extractJsonBlock(cleaned, '{', '}');
+  if (objectText) {
+    const parsed = tryParseJson<T>(objectText);
+    if (parsed.ok) return parsed.value;
+  }
+
+  const arrayText = extractJsonBlock(cleaned, '[', ']');
+  if (arrayText) {
+    const parsed = tryParseJson<T>(arrayText);
+    if (parsed.ok) return parsed.value;
+  }
+
+  throw new Error('Gemini did not return parseable JSON.');
+}
+
+function tryParseJson<T>(text: string): { ok: true; value: T } | { ok: false } {
+  try {
+    return { ok: true, value: JSON.parse(text) as T };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function extractJsonBlock(text: string, open: '{' | '[', close: '}' | ']') {
+  const start = text.indexOf(open);
+  const end = text.lastIndexOf(close);
+  if (start === -1 || end === -1 || end <= start) return '';
+  return text.slice(start, end + 1);
 }
 
 function dedupeCandidates(candidates: ScoutCandidate[]) {
   const seen = new Set<string>();
   return candidates.filter((candidate) => {
-    const key = candidate.imageUrl.toLowerCase().replace(/\?.*$/, '');
+    const key = candidateIdentity(candidate);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
 }
 
+function candidateIdentity(candidate: ScoutCandidate) {
+  return (candidate.verifiedImageUrl || candidate.imageUrl).toLowerCase().replace(/[?#].*$/, '');
+}
+
 function isUsableImageUrl(url: string) {
   if (!/^https?:\/\//i.test(url)) return false;
-  if (/\.(svg|gif)(\?|$)/i.test(url)) return false;
+  if (/\.(svg|gif)(\?|#|$)/i.test(url)) return false;
+  if (/\/search\?|google\.[^/]+\/imgres|bing\.com\/images|pinterest\.[^/]+\/pin\//i.test(url)) return false;
   return true;
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = IMAGE_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Request timed out.');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function retryAsync<T>(fn: () => Promise<T>, retries: number) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries || !isRetryableError(error)) break;
+      await delay(450 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
+function isRetryableError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /429|5\d\d|timeout|timed out|network|failed to fetch/i.test(message);
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item: T, index: number) => Promise<R>) {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+      }
+    }),
+  );
+
+  return results;
+}
+
+function uniqueUrls(urls: string[]) {
+  const seen = new Set<string>();
+  return urls
+    .map((url) => url.trim())
+    .filter(Boolean)
+    .filter((url) => {
+      const key = url.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 function clamp(value: number, min: number, max: number) {
