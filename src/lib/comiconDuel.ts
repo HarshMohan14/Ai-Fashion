@@ -439,7 +439,7 @@ Return ONLY compact JSON:
 Signals:
 ${JSON.stringify(signals, null, 2)}
     `.trim());
-    const timeoutPromise = new Promise<any>((_, reject) => setTimeout(() => reject(new Error('Gemini timeout')), 2500));
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Gemini timeout')), 2500));
     const result = await Promise.race([resultPromise, timeoutPromise]);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(text) as Partial<DateOrDumpResult>;

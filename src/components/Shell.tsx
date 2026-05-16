@@ -2,17 +2,18 @@ import { ReactNode, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Shirt, FlaskConical, Users, Camera, Sparkles,
-  BarChart3, Moon, Sun, Bell, Search, FlaskRound, Scissors,
+  BarChart3, Moon, Sun, Bell, Search, FlaskRound, Scissors, Compass,
   Menu, X, Gamepad2, MoreHorizontal
 } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 
 export type SectionKey =
-  | 'boardroom' | 'wardrobe' | 'lab' | 'models' | 'scenarios' | 'runway' | 'looks' | 'analytics';
+  | 'boardroom' | 'wardrobe' | 'scout' | 'lab' | 'models' | 'scenarios' | 'runway' | 'looks' | 'analytics';
 
 const nav: { key: SectionKey; label: string; icon: typeof LayoutDashboard; doctor: string }[] = [
   { key: 'boardroom', label: 'The Boardroom', icon: LayoutDashboard, doctor: 'Dr. Director' },
   { key: 'wardrobe', label: 'Digital Wardrobe', icon: Shirt, doctor: 'Dr. Shopkeeper' },
+  { key: 'scout', label: 'Scout Sourcing', icon: Compass, doctor: 'Dr. Scout' },
   { key: 'lab', label: 'Extraction Lab', icon: FlaskConical, doctor: 'Dr. Scientist' },
   { key: 'models', label: 'Model Hub', icon: Users, doctor: 'Dr. Body' },
   { key: 'scenarios', label: 'Scenario Hub', icon: Camera, doctor: 'Dr. Photographer' },
@@ -21,7 +22,7 @@ const nav: { key: SectionKey; label: string; icon: typeof LayoutDashboard; docto
   { key: 'analytics', label: 'DFB Analytics', icon: BarChart3, doctor: 'Dr. Analytics' },
 ];
 
-const mobilePrimaryNav: SectionKey[] = ['boardroom', 'wardrobe', 'runway', 'analytics'];
+const mobilePrimaryNav: SectionKey[] = ['boardroom', 'scout', 'wardrobe', 'runway'];
 
 function navItem(key: SectionKey) {
   return nav.find((item) => item.key === key) ?? nav[0];
