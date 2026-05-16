@@ -23,7 +23,7 @@ type Sort = 'popularity' | 'newest' | 'rating';
 
 export function Wardrobe() {
   const [items, setItems] = useState<WardrobeItem[]>([]);
-  const [collectionTab, setCollectionTab] = useState<'regular' | 'comicon'>('regular');
+  const [collectionTab, setCollectionTab] = useState<'regular' | 'comicon' | 'scout'>('regular');
   const [category, setCategory] = useState<string>('Topwear');
   const [subcategory, setSubcategory] = useState<string>('All');
   const [sort, setSort] = useState<Sort>('popularity');
@@ -80,7 +80,10 @@ export function Wardrobe() {
   const currentCat = CATEGORIES.find((c) => c.name === category)!;
 
   const filtered = useMemo(() => {
-    let list = items.filter((i) => (i.collection || 'regular') === collectionTab);
+    let list = items.filter((i) => {
+      if (collectionTab === 'scout') return i.source === 'dr_scout' || Boolean(i.scout_collection_key);
+      return (i.collection || 'regular') === collectionTab;
+    });
     list = list.filter((i) => i.category === category);
     if (subcategory !== 'All') list = list.filter((i) => i.subcategory === subcategory);
     if (query) list = list.filter((i) => i.name.toLowerCase().includes(query.toLowerCase()));
@@ -163,6 +166,12 @@ export function Wardrobe() {
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${collectionTab === 'comicon' ? 'bg-white dark:bg-[#222] shadow text-purple-600' : 'text-neutral-500'}`}
             >
               Comicon Collection
+            </button>
+            <button
+              onClick={() => setCollectionTab('scout')}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${collectionTab === 'scout' ? 'bg-white dark:bg-[#222] shadow text-emerald-600' : 'text-neutral-500'}`}
+            >
+              Scout Drops
             </button>
           </div>
         </div>
@@ -423,6 +432,11 @@ function Card({
               Re-rendered
             </span>
           )}
+          {item.source === 'dr_scout' && (
+            <span className="text-[10px] uppercase tracking-wider font-semibold text-white px-2 py-1 rounded-full bg-emerald-600">
+              Dr. Scout
+            </span>
+          )}
         </div>
         <button
           onClick={(e) => { e.stopPropagation(); onDelete(); }}
@@ -451,6 +465,7 @@ function Card({
         <div className="flex flex-wrap gap-1.5 mt-3">
           <span className="chip">Fabric · {item.fabric}</span>
           <span className="chip">Fit · {item.fit}</span>
+          {item.scout_collection_title && <span className="chip">Scout · {item.scout_collection_title}</span>}
           {item.color_hex && (
             <span className="chip">
               <span className="w-2.5 h-2.5 rounded-full border border-black/10" style={{ background: item.color_hex }} />

@@ -66,7 +66,9 @@ function getNextRandomCardId(): string {
   let available: string[] = [];
   try {
     available = JSON.parse(window.localStorage.getItem(key) || '[]');
-  } catch {}
+  } catch {
+    available = [];
+  }
 
   if (!available || available.length === 0) {
     available = DATE_OR_DUMP_RESULT_CARD_LIST.map((c) => c.id);
@@ -79,7 +81,9 @@ function getNextRandomCardId(): string {
   const nextCardId = available.pop() || 'share-1';
   try {
     window.localStorage.setItem(key, JSON.stringify(available));
-  } catch {}
+  } catch {
+    // If localStorage is unavailable, continue with the in-memory shuffled card list.
+  }
   return nextCardId;
 }
 
@@ -421,7 +425,6 @@ export function ComiconDuel() {
             result={result}
             resultCardId={resultCardId}
             loading={resultLoading}
-            answers={answers}
             onPlayAgain={playAgain}
             onShare={shareResult}
           />
@@ -624,14 +627,12 @@ function ResultScreen({
   result,
   resultCardId,
   loading,
-  answers,
   onPlayAgain,
   onShare,
 }: {
   result: DateOrDumpResult | null;
   resultCardId: string | null;
   loading: boolean;
-  answers: DateOrDumpAnswer[];
   onPlayAgain: () => void;
   onShare: () => void;
 }) {
@@ -1087,14 +1088,6 @@ function recordRosePreferenceLocal(
   }
 }
 
-function stableHash(seed: string) {
-  let hash = 2166136261;
-  for (let i = 0; i < seed.length; i += 1) {
-    hash ^= seed.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return Math.abs(hash);
-}
 
 type DateOrDumpSound = 'start' | 'tap' | 'pick' | 'tick' | 'timeout' | 'result';
 
