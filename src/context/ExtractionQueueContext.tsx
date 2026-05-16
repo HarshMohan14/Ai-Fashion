@@ -148,16 +148,7 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
   }, [updateJob]);
 
   const addJobFromUrl = useCallback(async (imageUrl: string, scoutMetadata?: ScoutImportMetadata) => {
-    const response = await fetch(imageUrl, { mode: 'cors' });
-    if (!response.ok) {
-      throw new Error(`Could not fetch Scout source image (${response.status}). Try a direct image URL.`);
-    }
-
-    const blob = await response.blob();
-    if (!blob.type.startsWith('image/')) {
-      throw new Error('Scout source did not resolve to an image file.');
-    }
-
+    const blob = await fetchScoutImageBlob(imageUrl);
     const extension = blob.type.includes('jpeg') ? 'jpg' : blob.type.includes('webp') ? 'webp' : 'png';
     const file = new File([blob], `dr-scout-${Date.now()}.${extension}`, { type: blob.type });
     return addJob(file, scoutMetadata);
@@ -306,6 +297,63 @@ export function ExtractionQueueProvider({ children }: { children: ReactNode }) {
       {children}
     </ExtractionQueueContext.Provider>
   );
+}
+
+
+async function fetchScoutImageBlob(imageUrl: string) {
+  const urls = [imageUrl, toScoutImageProxyUrl(imageUrl)].filter(Boolean);
+  let lastError: unknown;
+
+  for (const url of urls) {
+    try {
+      const blob = await fetchScoutImageBlobOnce(url);
+      return blob;
+    } catch (error) {
+      lastError = error;
+      console.warn('[ExtractionQueue] Scout image fetch failed; trying next source if available.', error);
+    }
+  }
+
+  if (lastError instanceof Error) throw lastError;
+  throw new Error('Scout source image could not be imported.');
+}
+
+async function fetchScoutImageBlobOnce(imageUrl: string) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const response = await fetch(imageUrl, { mode: 'cors', cache: 'no-store', signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Could not fetch Scout source image (${response.status}). Try another live Scout photo.`);
+    }
+
+    const blob = await response.blob();
+    if (!blob.type.startsWith('image/')) {
+      throw new Error('Scout source did not resolve to an image file.');
+    }
+    if (blob.size < 1024) {
+      throw new Error('Scout source image was empty or too small.');
+    }
+    if (blob.size > 12 * 1024 * 1024) {
+      throw new Error('Scout source image is too large for Extraction Lab.');
+    }
+
+    return blob;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Scout source image timed out before Extraction Lab could import it.');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function toScoutImageProxyUrl(url: string) {
+  const cleanUrl = url.trim();
+  if (!cleanUrl || !/^https?:\/\//i.test(cleanUrl) || /images\.weserv\.nl/i.test(cleanUrl)) return '';
+  return `https://images.weserv.nl/?url=${encodeURIComponent(cleanUrl.replace(/^https?:\/\//i, ''))}&output=webp`;
 }
 
 export function useExtractionQueue() {
